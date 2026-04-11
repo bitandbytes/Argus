@@ -1,0 +1,45 @@
+# Plugin configuration
+# Plugins are discovered at startup via this file — never hardcode imports in core code
+
+indicators:
+  enabled:
+    - name: "sma_crossover"
+      class: "src.plugins.indicators.sma.SMACrossoverIndicator"
+      active: true
+    - name: "rsi"
+      class: "src.plugins.indicators.rsi.RSIIndicator"
+      active: true
+    - name: "macd"
+      class: "src.plugins.indicators.macd.MACDIndicator"
+      active: true
+    - name: "bollinger"
+      class: "src.plugins.indicators.bollinger.BollingerBandIndicator"
+      active: true
+    - name: "donchian"
+      class: "src.plugins.indicators.donchian.DonchianChannelIndicator"
+      active: true
+    - name: "volume"
+      class: "src.plugins.indicators.volume.VolumeIndicator"
+      active: true
+
+smoothers:
+  enabled: []
+  # Phase 4 — Kalman filter (future)
+  # - name: "kalman"
+  #   class: "src.plugins.smoothing.kalman.KalmanSmoother"
+  #   apply_to: ["close"]
+  #   active: true
+
+enrichers:
+  enabled:
+    - name: "finbert"
+      class: "src.plugins.enrichers.finbert.FinBERTEnricher"
+      active: true
+
+filters:
+  enabled: []
+  # Phase 3 — LLM validator
+  # - name: "llm_validator"
+  #   class: "src.plugins.filters.llm_validator.LLMValidator"
+  #   stage: "post_meta"
+  #   active: true

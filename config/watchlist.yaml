@@ -1,0 +1,42 @@
+# Watchlist for development and testing
+# 8 US large-caps + 2 European ETFs (gold + defense)
+#
+# NOTE: European ETF tickers (.DE suffix for Xetra) may have limited yfinance support.
+# Verify with: python -c "import yfinance as yf; print(yf.Ticker('4GLD.DE').history(period='1mo'))"
+# If yfinance fails, alternatives: SGLN.L (London) or use a paid data provider.
+
+stocks:
+  - ticker: AAPL
+    name: Apple Inc.
+    sector: Technology
+  - ticker: MSFT
+    name: Microsoft Corporation
+    sector: Technology
+  - ticker: GOOGL
+    name: Alphabet Inc.
+    sector: Communication Services
+  - ticker: NVDA
+    name: NVIDIA Corporation
+    sector: Technology
+  - ticker: JPM
+    name: JPMorgan Chase & Co.
+    sector: Financials
+  - ticker: JNJ
+    name: Johnson & Johnson
+    sector: Healthcare
+  - ticker: XOM
+    name: Exxon Mobil Corporation
+    sector: Energy
+  - ticker: WMT
+    name: Walmart Inc.
+    sector: Consumer Staples
+
+etfs:
+  - ticker: 4GLD.DE
+    name: iShares Physical Gold ETC
+    sector: Commodities
+    notes: "Verify yfinance support; alternative ticker SGLN.L on LSE"
+  - ticker: DFNS.DE
+    name: VanEck Defense UCITS ETF
+    sector: Defense
+    notes: "Verify yfinance support; launched 2023, may have limited history"

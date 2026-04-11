@@ -1,0 +1,95 @@
+# Global pipeline settings
+
+pipeline:
+  mode: "paper"
+  schedule: "0 7 * * 1-5"
+  watchlist_path: "config/watchlist.yaml"
+
+data:
+  market_provider: "yfinance"
+  cache_dir: "data/raw"
+  feature_dir: "data/features"
+  default_history_period: "max"
+
+sentiment:
+  finbert:
+    model_name: "ProsusAI/finbert"
+    device: "cpu"
+    batch_size: 64
+    rolling_windows: [1, 5, 20]
+  llm:
+    provider: "openai"
+    model: "gpt-4o-mini"
+    max_tokens: 500
+    temperature: 0
+    cache_ttl_hours: 24
+
+regime:
+  hmm:
+    n_components: 3
+    covariance_type: "full"
+    n_iter: 100
+    lookback_days: 504
+  adx:
+    period: 14
+    trend_threshold: 25
+    range_threshold: 20
+
+quant:
+  entry_confidence_threshold: 0.30
+  exit_confidence_threshold: 0.20
+  multi_timeframe_boost: 1.15
+
+meta_model:
+  algorithm: "xgboost"
+  confidence_threshold: 0.55
+  uncertainty_threshold: 0.15
+  retrain_frequency: "monthly"
+  xgboost:
+    max_depth: 5
+    learning_rate: 0.01
+    n_estimators: 500
+    reg_lambda: 7.0
+    subsample: 0.8
+    colsample_bytree: 0.8
+
+tuning:
+  optimizer: "optuna"
+  n_trials: 100
+  in_sample_days: 252
+  out_of_sample_days: 126
+  n_clusters: 5
+  recluster_frequency: "quarterly"
+  promotion:
+    min_history_bars: 2500
+    sharpe_improvement_threshold: 1.20
+    param_drift_threshold: 0.20
+    pbo_threshold: 0.40
+    min_oos_trades: 30
+    demotion_lookback_days: 60
+    demotion_sharpe_gap: 0.30
+
+risk:
+  max_position_pct: 0.05
+  max_sector_pct: 0.20
+  kelly_fraction: 0.5
+  atr_stop_multiplier: 2.0
+  atr_tp_multiplier: 4.0
+  max_daily_drawdown_pct: 0.05
+  max_total_drawdown_pct: 0.15
+  regime_size_adjustments:
+    TRENDING_UP: 1.0
+    TRENDING_DOWN: 0.8
+    RANGING: 0.8
+    VOLATILE: 0.5
+
+broker:
+  provider: "alpaca"
+  paper_trading: true
+
+alerts:
+  telegram:
+    on_trade: true
+    on_veto: true
+    on_drawdown_breach: true
+    daily_summary: true
