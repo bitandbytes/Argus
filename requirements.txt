@@ -1,3 +1,16 @@
+# ============================================================
+# IMPORTANT: Python 3.12 is required for this project.
+#
+# Reasons:
+#   - pandas-ta pins numba==0.61.2, which only builds on Python <=3.12
+#   - torch >=2.6 fails on Windows 10 (WinError 1114, c10.dll init)
+#
+# After running `pip install -r requirements.txt`, also run:
+#   pip install "torch==2.5.0" --index-url https://download.pytorch.org/whl/cpu
+#
+# Setup: py -3.12 -m venv .venv && .venv\Scripts\activate
+# ============================================================
+
 # Core
 python-dotenv>=1.0.0
 pyyaml>=6.0
@@ -12,11 +25,17 @@ pyarrow>=15.0.0
 numpy>=1.26.0
 
 # Indicators
+# NOTE: pandas-ta pins numba==0.61.2. This works on Python 3.12 (the required version).
+# Do not add a numba version override here — it will cause a pip resolution conflict.
 pandas-ta>=0.3.14b
 
 # Sentiment (FinBERT)
 transformers>=4.40.0
-torch>=2.2.0
+# torch: pip's default index picks the latest (2.11+) which fails on Windows 10 with WinError 1114.
+# Install CPU wheel manually AFTER pip install -r requirements.txt:
+#   pip install "torch==2.5.0" --index-url https://download.pytorch.org/whl/cpu
+# torch 2.5.0+cpu is confirmed working on Python 3.12 + Windows 10.
+torch>=2.2.0,<2.6.0
 tokenizers>=0.19.0
 
 # Regime detection
@@ -61,5 +80,6 @@ pytest>=8.0
 pytest-cov>=4.1
 black>=24.0
 ruff>=0.4.0
+pre-commit>=3.7
 ipykernel>=6.29.0
 jupyter>=1.0.0

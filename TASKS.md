@@ -16,35 +16,54 @@ Development task list organized by phase. Check off tasks as they are completed.
 
 ### 1.1 Project Setup
 
-- [ ] Create Python virtual environment (`python -m venv .venv`)
-- [ ] Install base dependencies (`pip install -r requirements.txt`)
-- [ ] Verify FinBERT model downloads correctly via HuggingFace transformers
+- [x] Create Python virtual environment (`python -m venv .venv`)
+- [x] Install base dependencies (`pip install -r requirements.txt`)
+  - Note: pandas-ta pins numba==0.61.2; on Python 3.12 this is fine — do NOT add `numba>=0.65.0` to requirements.txt or pip resolution fails.
+  - Note: torch>=2.6 fails on Windows 10 (WinError 1114, c10.dll init). Fix: install CPU wheel `pip install "torch==2.5.0" --index-url https://download.pytorch.org/whl/cpu` after the regular install. Documented in requirements.txt.
+- [x] Verify FinBERT model downloads correctly via HuggingFace transformers
+  - Model cached (109M params, labels: positive/negative/neutral). Sanity-check inference confirmed correct sentiment.
+  - Fix applied: `use_safetensors=True` in `download_finbert.py` — transformers >=5.x blocks `torch.load` on torch <2.6 (CVE-2025-32434); safetensors bypasses this.
+  - Fix applied: removed stale `hf.cached_download` reference in `verify_setup.py` — removed in huggingface_hub 1.x.
 - [ ] Create `.env` from `.env.example` and add OpenAI API key
-- [ ] Set up MLflow locally (`mlflow ui` should serve on `localhost:5000`)
-- [ ] Configure git hooks for black/ruff (optional but recommended)
-- [ ] Verify yfinance data fetch works for all tickers in `config/watchlist.yaml`
+- [x] Set up MLflow locally (`mlflow ui` should serve on `localhost:5000`) — DB initialized at `data/mlflow.db`
+- [x] Configure git hooks for black/ruff — `.pre-commit-config.yaml` created; run `pre-commit install`
+- [x] Verify yfinance data fetch works for all tickers in `config/watchlist.yaml`
+  - All 8 US stocks: PASS. 4GLD.DE (gold ETF): PASS. DFNS.DE (defense ETF): no data — replaced with `ITA` (iShares Aerospace & Defense ETF, US-listed, history from 2006).
+- Note: VS Code shows "package not installed" hints — select `.venv` as the Python interpreter (Ctrl+Shift+P → "Python: Select Interpreter" → `.venv`).
 
 ### 1.2 Data Layer
 
-- [ ] Implement `MarketDataProvider` class wrapping yfinance with caching
-- [ ] Implement `FeatureStore` using Parquet files in `data/features/`
-- [ ] Add `get_earnings_calendar()` method to MarketDataProvider
-- [ ] Create `NewsDataProvider` stub (Phase 1 may skip live news; use Alpha Vantage free tier later)
-- [ ] Write unit tests for data providers (mock the yfinance calls)
-- [ ] Validate data quality: check for NaN values, missing dates, suspicious price gaps
+- [x] Implement `MarketDataProvider` class wrapping yfinance with caching
+  - `src/data/market_data.py` — fetch_ohlcv, fetch_batch (1.5s throttle), is_cache_stale
+  - Cache: `data/raw/{ticker}/daily.parquet`; stale only on weekdays when last date < yesterday
+  - Error handling: falls back to stale cache on yfinance failure; raises DataFetchError only when no cache exists
+- [x] Implement `FeatureStore` using Parquet files in `data/features/`
+  - `src/data/feature_store.py` — save_features (upsert), load_features (date filtering), get_latest, update_sentiment, exists, list_tickers
+  - Column prefix conventions: `tech_`, `sent_`, `deriv_` map to FeatureVector fields
+- [x] Add `get_earnings_calendar()` method to MarketDataProvider
+  - Phase 1 stub: uses `yf.Ticker.calendar`; returns `[]` on any error
+- [x] Create `NewsDataProvider` stub (Phase 1 may skip live news; use Alpha Vantage free tier later)
+  - `src/data/news_data.py` — get_headlines and get_macro_news both return `[]`; interface ready for Alpha Vantage / Finnhub in Phase 3
+- [x] Write unit tests for data providers (mock the yfinance calls)
+  - `tests/test_data_providers.py` — 46 tests, all passing; yfinance fully mocked, file I/O uses tmp_path
+- [x] Validate data quality: check for NaN values, missing dates, suspicious price gaps
+  - MarketDataProvider._validate(): NaN forward-fill + warning, >20% price gap warning, missing business-day gap warning (>5 days), zero-volume warning
 
 ### 1.3 Plugin Foundation
 
-- [ ] Implement abstract base classes in `src/plugins/base.py`:
+- [x] Implement abstract base classes in `src/plugins/base.py`:
   - `IndicatorPlugin`
   - `SmoothingPlugin`
   - `DataEnricher`
   - `SignalFilter`
   - Supporting types: `SmoothResult`, `ParamSpec`
-- [ ] Implement `PluginRegistry` in `src/plugins/registry.py` with discovery logic
-- [ ] Load plugin config from `config/plugins.yaml`
-- [ ] Write tests for plugin registry: register, retrieve, list, error on missing
-- [ ] Document the plugin contract in `.claude/skills/plugin-author/SKILL.md` (already drafted)
+- [x] Implement `PluginRegistry` in `src/plugins/registry.py` with discovery logic
+  - `discover_plugins(config_path)`, getters, `list_available()`, `get_filters_by_stage()`
+- [x] Load plugin config from `config/plugins.yaml`
+  - 6 indicators + finbert enricher defined; Kalman/LLM validator commented for Phase 4/3
+- [x] Write tests for plugin registry: register, retrieve, list, error on missing
+  - `tests/test_plugin_registry.py` — 14 tests; stubs defined inline; monkeypatched `_instantiate` for discover tests
+- [x] Document the plugin contract in `.claude/skills/plugin-author/SKILL.md` (already drafted)
 
 ### 1.4 Indicator Plugins (each as separate plugin)
 

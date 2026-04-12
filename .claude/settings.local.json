@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python*:*)",
+      "Bash(.venv/Scripts/pip*:*)",
+      "Bash(.venv/Scripts/pre-commit*:*)",
+      "Bash(f:/Argus/.venv/Scripts/python*:*)",
+      "Bash(f:/Argus/.venv/Scripts/pip*:*)",
+      "Bash(/f/Argus/.venv/Scripts/python*:*)",
+      "Bash(py*:*)",
+      "Bash(python*:*)",
+      "Bash(ls *)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Windows/System32/**)",
+      "Bash(.venv/Scripts/python.exe -m pytest *)"
+    ]
+  }
+}

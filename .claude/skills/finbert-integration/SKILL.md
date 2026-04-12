@@ -43,8 +43,12 @@ For a watchlist of 100 tickers with ~10 headlines each per day, batch processing
 ## Step 1: Install Dependencies
 
 ```bash
-pip install transformers torch
+pip install transformers
+# torch must be pinned to 2.5.0+cpu — torch >=2.6 fails on Windows 10 (WinError 1114):
+pip install "torch==2.5.0" --index-url https://download.pytorch.org/whl/cpu
 ```
+
+Both are already in `requirements.txt`. The torch CPU wheel must be installed separately after the main `pip install -r requirements.txt` — see the requirements.txt header for the exact command.
 
 The model will download automatically on first use (~440 MB) and cache in `~/.cache/huggingface/`.
 
@@ -63,50 +67,50 @@ from src.models.feature_vector import FeatureVector
 class FinBERTEnricher(DataEnricher):
     """
     Local sentiment analysis using FinBERT (ProsusAI/finbert).
-    
+
     Runs in batch mode on CPU. Processes thousands of headlines per minute.
     Outputs sentiment scores in [-1, +1] where:
         +1 = strongly positive
         -1 = strongly negative
          0 = neutral
     """
-    
+
     name = "finbert"
     data_type = "sentiment"
     version = "1.0.0"
-    
+
     def __init__(self, model_name: str = "ProsusAI/finbert", device: str = "cpu", batch_size: int = 64):
         self.device = torch.device(device)
         self.batch_size = batch_size
-        
+
         # Load model and tokenizer (downloads on first use, cached afterward)
         self.tokenizer = BertTokenizer.from_pretrained(model_name)
         self.model = BertForSequenceClassification.from_pretrained(model_name)
         self.model.to(self.device)
         self.model.eval()
-        
+
         # FinBERT label order: [positive, negative, neutral]
         self.label_map = {0: "positive", 1: "negative", 2: "neutral"}
-    
+
     def analyze_batch(self, headlines: List[str]) -> List[Dict[str, float]]:
         """
         Process a batch of headlines and return sentiment probabilities.
-        
+
         Args:
             headlines: List of headline strings
-        
+
         Returns:
             List of dicts with keys: positive, negative, neutral, score, confidence
         """
         if not headlines:
             return []
-        
+
         results = []
-        
+
         # Process in batches to avoid OOM
         for i in range(0, len(headlines), self.batch_size):
             batch = headlines[i : i + self.batch_size]
-            
+
             inputs = self.tokenizer(
                 batch,
                 return_tensors="pt",
@@ -114,18 +118,18 @@ class FinBERTEnricher(DataEnricher):
                 truncation=True,
                 max_length=128,
             ).to(self.device)
-            
+
             with torch.no_grad():
                 outputs = self.model(**inputs)
                 probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
-            
+
             for j, p in enumerate(probs.cpu().numpy()):
                 pos, neg, neu = p[0], p[1], p[2]
                 # Score in [-1, +1]: P(positive) - P(negative)
                 score = float(pos - neg)
                 # Confidence: max probability across all classes
                 confidence = float(max(pos, neg, neu))
-                
+
                 results.append({
                     "headline": batch[j],
                     "positive": float(pos),
@@ -134,9 +138,9 @@ class FinBERTEnricher(DataEnricher):
                     "score": score,
                     "confidence": confidence,
                 })
-        
+
         return results
-    
+
     def enrich(self, ticker: str, features: FeatureVector) -> Dict[str, float]:
         """
         Compute sentiment features for a ticker. This is the main interface
@@ -144,20 +148,20 @@ class FinBERTEnricher(DataEnricher):
         """
         # Load headlines for this ticker (from your news provider)
         headlines = self._load_recent_headlines(ticker, days_back=30)
-        
+
         if not headlines:
             return self._empty_features()
-        
+
         # Score each headline
         scored = self.analyze_batch([h["text"] for h in headlines])
-        
+
         # Aggregate into time-bucketed features
         scores_df = pd.DataFrame(scored)
         scores_df["timestamp"] = [h["timestamp"] for h in headlines]
         scores_df = scores_df.set_index("timestamp").sort_index()
-        
+
         return self._compute_rolling_features(scores_df)
-    
+
     def batch_enrich(self, tickers: List[str]) -> Dict[str, Dict[str, float]]:
         """
         Process all tickers in a single pass — more efficient than calling
@@ -166,16 +170,16 @@ class FinBERTEnricher(DataEnricher):
         # Collect all headlines from all tickers
         all_headlines = []
         ticker_indices = {}  # Maps ticker -> (start_idx, end_idx) in all_headlines
-        
+
         for ticker in tickers:
             headlines = self._load_recent_headlines(ticker, days_back=30)
             start = len(all_headlines)
             all_headlines.extend([h["text"] for h in headlines])
             ticker_indices[ticker] = (start, len(all_headlines), headlines)
-        
+
         # One big batched inference
         scored = self.analyze_batch(all_headlines)
-        
+
         # Split results back per ticker
         results = {}
         for ticker, (start, end, raw_headlines) in ticker_indices.items():
@@ -184,33 +188,33 @@ class FinBERTEnricher(DataEnricher):
             scores_df["timestamp"] = [h["timestamp"] for h in raw_headlines]
             scores_df = scores_df.set_index("timestamp").sort_index()
             results[ticker] = self._compute_rolling_features(scores_df)
-        
+
         return results
-    
+
     def _compute_rolling_features(self, scores_df: pd.DataFrame) -> Dict[str, float]:
         """Compute rolling aggregations from per-headline scores."""
         if scores_df.empty:
             return self._empty_features()
-        
+
         # Daily aggregation: weighted average by confidence
         daily = scores_df.resample("D").apply(
             lambda x: (x["score"] * x["confidence"]).sum() / x["confidence"].sum()
             if x["confidence"].sum() > 0 else 0.0
         )
-        
+
         latest = daily.iloc[-1] if len(daily) > 0 else 0.0
         ma_5d = daily.tail(5).mean() if len(daily) >= 5 else latest
         ma_20d = daily.tail(20).mean() if len(daily) >= 20 else latest
         momentum = ma_5d - ma_20d
-        
+
         # News volume features
         news_count_today = len(scores_df[scores_df.index.date == pd.Timestamp.now().date()])
         news_count_avg = len(scores_df) / 30  # 30-day average
         news_volume_ratio = news_count_today / news_count_avg if news_count_avg > 0 else 0
-        
+
         # Negative news ratio (heavily weighted negative outcomes)
         negative_ratio = (scores_df["score"] < -0.3).sum() / len(scores_df)
-        
+
         return {
             "sentiment_score": float(latest),
             "sentiment_ma_5d": float(ma_5d),
@@ -219,7 +223,7 @@ class FinBERTEnricher(DataEnricher):
             "news_volume_ratio": float(news_volume_ratio),
             "negative_news_ratio": float(negative_ratio),
         }
-    
+
     def _empty_features(self) -> Dict[str, float]:
         """Return zero features when no headlines are available."""
         return {
@@ -230,7 +234,7 @@ class FinBERTEnricher(DataEnricher):
             "news_volume_ratio": 0.0,
             "negative_news_ratio": 0.0,
         }
-    
+
     def _load_recent_headlines(self, ticker: str, days_back: int) -> List[Dict]:
         """Load headlines from the news data store. Implementation depends on data source."""
         # TODO: Wire up to NewsDataProvider in src/data/news_data.py
@@ -263,17 +267,17 @@ class FinBERTEnricher(DataEnricher):
     def __init__(self, ..., cache_dir: str = "data/models/finbert_cache"):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-    
+
     def _cache_key(self, headline: str) -> str:
         """Stable hash of headline text."""
         return hashlib.sha256(headline.encode()).hexdigest()[:16]
-    
+
     def analyze_batch_cached(self, headlines: List[str]) -> List[Dict[str, float]]:
         """Check cache before running inference."""
         results = []
         to_process = []
         to_process_indices = []
-        
+
         for i, h in enumerate(headlines):
             cache_path = self.cache_dir / f"{self._cache_key(h)}.json"
             if cache_path.exists():
@@ -283,7 +287,7 @@ class FinBERTEnricher(DataEnricher):
                 results.append(None)
                 to_process.append(h)
                 to_process_indices.append(i)
-        
+
         if to_process:
             new_results = self.analyze_batch(to_process)
             for idx, result in zip(to_process_indices, new_results):
@@ -292,7 +296,7 @@ class FinBERTEnricher(DataEnricher):
                 cache_path = self.cache_dir / f"{self._cache_key(headlines[idx])}.json"
                 with open(cache_path, "w") as f:
                     json.dump(result, f)
-        
+
         return results
 ```
 

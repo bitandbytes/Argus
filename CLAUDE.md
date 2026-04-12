@@ -35,7 +35,7 @@ Data → FinBERT (batch sentiment) → Regime Detector → Quant Engine
 
 ## Tech Stack
 
-- **Language**: Python 3.11+
+- **Language**: Python 3.12 (hard requirement — see constraints below)
 - **Package management**: `pip` + `requirements.txt` (see ADR-0007)
 - **Data**: yfinance (free, daily OHLCV) — see ADR-0008
 - **Indicators**: pandas-ta
@@ -155,10 +155,14 @@ All major architectural decisions are documented as ADRs in `docs/decisions/`. R
 ## Common Commands
 
 ```bash
-# Setup (first time)
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+# Setup (first time) — Python 3.12 required
+py -3.12 -m venv .venv            # Windows (Python Launcher)
+# python3.12 -m venv .venv        # Linux/Mac
+source .venv/bin/activate          # Linux/Mac
+.venv\Scripts\activate             # Windows
 pip install -r requirements.txt
+# torch 2.5.0+cpu must be installed separately (pip default picks 2.11+ which fails on Windows 10):
+pip install "torch==2.5.0" --index-url https://download.pytorch.org/whl/cpu
 cp .env.example .env  # Then fill in API keys
 
 # Run tests
@@ -192,6 +196,8 @@ TELEGRAM_CHAT_ID=...
 
 ## Important Constraints
 
+- **Python 3.12 required**: pandas-ta pins `numba==0.61.2` (incompatible with Python 3.13+); torch ≥ 2.6 fails on Windows 10 (WinError 1114). Python 3.12 + `torch==2.5.0+cpu` is the confirmed working combination.
+- **torch CPU wheel**: After `pip install -r requirements.txt`, run `pip install "torch==2.5.0" --index-url https://download.pytorch.org/whl/cpu`. The default pip index resolves torch 2.11+ which fails on Windows 10.
 - **Position trading timeframe only**: Holding periods of days to weeks, NOT day trading or HFT.
 - **Daily bars are sufficient**: No intraday data dependencies. Pipeline runs once per day pre-market.
 - **Free-tier first**: All Phase 1 components run with free data sources. Paid services are optional upgrades.

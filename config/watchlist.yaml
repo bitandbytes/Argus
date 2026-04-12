@@ -1,9 +1,13 @@
 # Watchlist for development and testing
-# 8 US large-caps + 2 European ETFs (gold + defense)
+# 8 US large-caps + 1 European ETF (gold) + 1 US ETF (defense)
 #
 # NOTE: European ETF tickers (.DE suffix for Xetra) may have limited yfinance support.
 # Verify with: python -c "import yfinance as yf; print(yf.Ticker('4GLD.DE').history(period='1mo'))"
 # If yfinance fails, alternatives: SGLN.L (London) or use a paid data provider.
+#
+# Defense ETF: DFNS.DE (VanEck Defense UCITS ETF) was replaced with ITA (iShares Aerospace &
+# Defense ETF) — DFNS.DE returned empty data from yfinance (possibly no history or delisted).
+# ITA is US-listed, liquid, history back to 2006.
 
 stocks:
   - ticker: AAPL
@@ -36,7 +40,7 @@ etfs:
     name: iShares Physical Gold ETC
     sector: Commodities
     notes: "Verify yfinance support; alternative ticker SGLN.L on LSE"
-  - ticker: DFNS.DE
-    name: VanEck Defense UCITS ETF
+  - ticker: ITA
+    name: iShares Aerospace & Defense ETF
     sector: Defense
-    notes: "Verify yfinance support; launched 2023, may have limited history"
+    notes: "US-listed, history from 2006, replaces DFNS.DE which returned empty data from yfinance"
