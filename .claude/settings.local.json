@@ -12,7 +12,9 @@
       "Bash(ls *)",
       "Read(//c/Program Files/**)",
       "Read(//c/Windows/System32/**)",
-      "Bash(.venv/Scripts/python.exe -m pytest *)"
+      "Bash(.venv/Scripts/python.exe -m pytest *)",
+      "Bash(.venv/Scripts/python -m pytest *)",
+      "Bash(.venv/Scripts/python -c ':*)"
     ]
   }
 }

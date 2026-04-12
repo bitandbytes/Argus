@@ -67,24 +67,35 @@ Development task list organized by phase. Check off tasks as they are completed.
 
 ### 1.4 Indicator Plugins (each as separate plugin)
 
-- [ ] Implement `SMACrossoverIndicator` with `compute()` and `normalize()` methods
-- [ ] Implement `RSIIndicator`
-- [ ] Implement `MACDIndicator`
-- [ ] Implement `BollingerBandIndicator`
-- [ ] Implement `DonchianChannelIndicator`
-- [ ] Implement `VolumeIndicator`
-- [ ] Unit tests for each indicator with known input/output pairs
-- [ ] Verify each indicator's `get_tunable_params()` returns valid ParamSpec entries
+- [x] Implement `SMACrossoverIndicator` with `compute()` and `normalize()` methods
+- [x] Implement `RSIIndicator`
+- [x] Implement `MACDIndicator`
+- [x] Implement `BollingerBandIndicator`
+- [x] Implement `DonchianChannelIndicator`
+- [x] Implement `VolumeIndicator`
+- [x] Unit tests for each indicator with known input/output pairs
+- [x] Verify each indicator's `get_tunable_params()` returns valid ParamSpec entries
 
 ### 1.5 FinBERT Sentiment Plugin
 
-- [ ] Implement `FinBERTEnricher` as a `DataEnricher` plugin
-- [ ] Cache model on first load to avoid re-downloading
-- [ ] Implement batch processing for efficiency (process 64 headlines at a time)
-- [ ] Compute rolling features: `sentiment_ma_5d`, `sentiment_ma_20d`, `sentiment_momentum`
-- [ ] Test on sample headlines to verify sentiment scores are reasonable
-- [ ] Decide on news source: skip historical news for Phase 1 backtests; use it live in Phase 3
-- [ ] See `.claude/skills/finbert-integration/SKILL.md` for implementation guidance
+- [x] Implement `FinBERTEnricher` as a `DataEnricher` plugin
+  - `src/plugins/enrichers/finbert.py` — enrich, batch_enrich, analyze_batch, analyze_batch_cached
+  - Zero-arg instantiation for registry compatibility; `news_provider` injectable for testing
+- [x] Cache model on first load to avoid re-downloading
+  - HuggingFace auto-caches to `~/.cache/huggingface/` on first `from_pretrained` call
+  - Per-headline inference cache in `data/models/finbert_cache/` (SHA256-keyed JSON files)
+- [x] Implement batch processing for efficiency (process 64 headlines at a time)
+  - `analyze_batch()` processes in chunks of `batch_size=64`; `max_length=128` truncation
+- [x] Compute rolling features: `sentiment_ma_5d`, `sentiment_ma_20d`, `sentiment_momentum`
+  - Also computes: `sentiment_score` (latest daily), `news_volume_ratio`, `negative_news_ratio`
+  - Confidence-weighted aggregation per day before rolling windows
+- [x] Test on sample headlines to verify sentiment scores are reasonable
+  - `tests/plugins/enrichers/test_finbert_enricher.py` — 4 live inference tests in `TestLiveSampleInference`
+  - Skipped automatically if model not cached; run `scripts/download_finbert.py` to enable
+- [x] Decide on news source: skip historical news for Phase 1 backtests; use it live in Phase 3
+  - Phase 1: `NewsDataProvider` stub returns `[]` → all sentiment features are 0.0 (intentional)
+  - Phase 3: implement `NewsDataProvider` with Alpha Vantage / Finnhub; no changes to enricher needed
+- [x] See `.claude/skills/finbert-integration/SKILL.md` for implementation guidance
 
 ### 1.6 Regime Detector
 
