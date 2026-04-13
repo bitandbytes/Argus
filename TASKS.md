@@ -122,14 +122,26 @@ Development task list organized by phase. Check off tasks as they are completed.
 
 ### 1.7 Quant Engine
 
-- [ ] Implement `QuantEngine` class that uses plugin registry
-- [ ] Load active indicators from registry on init
-- [ ] Apply regime-specific weights (initial defaults from architecture doc)
-- [ ] Compute composite score = Σ(weight × normalized_score)
-- [ ] Implement multi-timeframe confirmation (daily + weekly alignment check)
-- [ ] Generate `TradeSignal` dataclass with direction, confidence, regime
-- [ ] Wire FinBERT sentiment as one of the inputs to the composite
-- [ ] See `.claude/skills/quant-engine-dev/SKILL.md` for design patterns
+- [x] Implement `QuantEngine` class that uses plugin registry
+  - `src/signals/quant_engine.py` — `generate_signal()`, `generate_series()`, `should_exit()`
+  - Plugin-agnostic: iterates `IndicatorPlugin` instances from registry; never hardcodes names
+- [x] Load active indicators from registry on init
+  - `registry.get_all_indicators()` called in `__init__`; params loaded via `get_default_params()`
+- [x] Apply regime-specific weights (initial defaults from architecture doc)
+  - `config/cluster_params/cluster_default.yaml` — 4 regimes × 7 keys (6 indicators + sentiment)
+  - Weights validated/normalized to sum to 1.0 on load; missing regimes filled with equal spread
+- [x] Compute composite score = Σ(weight × normalized_score)
+  - `_weighted_composite()` — sums weight × normalized score, clips to [-1, +1]
+  - Added `output_column: str` class attribute to `IndicatorPlugin` base + all 6 plugins
+- [x] Implement multi-timeframe confirmation (daily + weekly alignment check)
+  - `_weekly_confirms()` — weekly SMA(4) vs SMA(10) via `resample("W-FRI")`; requires ≥20 weekly bars
+  - `multi_timeframe_boost=1.15` from `config/settings.yaml`; confidence never exceeds 1.0
+- [x] Generate `TradeSignal` dataclass with direction, confidence, regime
+  - All required fields populated; `stop_loss_pct`, `take_profit_pct`, `bet_size`, `llm_approved` left None
+- [x] Wire FinBERT sentiment as one of the inputs to the composite
+  - `sentiment_score: float = 0.0` parameter on `generate_signal()`; weight from cluster_default.yaml
+  - Phase 1: always 0.0 (stub). Phase 3: orchestrator passes real FinBERT score
+- [x] See `.claude/skills/quant-engine-dev/SKILL.md` for design patterns
 
 ### 1.8 Initial Backtesting
 

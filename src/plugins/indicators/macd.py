@@ -24,6 +24,7 @@ class MACDIndicator(IndicatorPlugin):
     name = "macd"
     category = "momentum"
     version = "1.0.0"
+    output_column = "macd_hist"
 
     def compute(self, df: pd.DataFrame, params: Dict[str, Any]) -> pd.DataFrame:
         """Compute MACD line, signal line, and histogram.

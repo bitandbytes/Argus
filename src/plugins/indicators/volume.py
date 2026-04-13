@@ -27,6 +27,7 @@ class VolumeIndicator(IndicatorPlugin):
     name = "volume"
     category = "volume"
     version = "1.0.0"
+    output_column = "obv_signal"
 
     def compute(self, df: pd.DataFrame, params: Dict[str, Any]) -> pd.DataFrame:
         """Compute OBV and its fast/slow EMAs.

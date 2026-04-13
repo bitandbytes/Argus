@@ -24,6 +24,7 @@ class DonchianChannelIndicator(IndicatorPlugin):
     name = "donchian"
     category = "trend"
     version = "1.0.0"
+    output_column = "dc_position"
 
     def compute(self, df: pd.DataFrame, params: Dict[str, Any]) -> pd.DataFrame:
         """Compute Donchian Channel and price position.

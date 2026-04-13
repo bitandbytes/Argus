@@ -24,6 +24,7 @@ class BollingerBandIndicator(IndicatorPlugin):
     name = "bollinger"
     category = "volatility"
     version = "1.0.0"
+    output_column = "bb_pct_b"
 
     def compute(self, df: pd.DataFrame, params: Dict[str, Any]) -> pd.DataFrame:
         """Compute Bollinger Bands and %B.

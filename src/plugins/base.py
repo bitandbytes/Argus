@@ -14,7 +14,7 @@ See .claude/skills/plugin-author/SKILL.md for the full plugin development guide.
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional
 
 import pandas as pd
@@ -84,6 +84,7 @@ class IndicatorPlugin(ABC):
         - name: str (unique identifier, snake_case)
         - category: str (one of: trend, momentum, volatility, volume, filter)
         - version: str (semver)
+        - output_column: str (the DataFrame column passed to normalize())
 
     See .claude/skills/plugin-author/SKILL.md for implementation examples.
     """
@@ -91,6 +92,7 @@ class IndicatorPlugin(ABC):
     name: str
     category: Literal["trend", "momentum", "volatility", "volume", "filter"]
     version: str
+    output_column: str  # Column produced by compute() that is passed to normalize()
 
     @abstractmethod
     def compute(self, df: pd.DataFrame, params: Dict[str, Any]) -> pd.DataFrame:

@@ -22,6 +22,7 @@ class RSIIndicator(IndicatorPlugin):
     name = "rsi"
     category = "momentum"
     version = "1.0.0"
+    output_column = "rsi"
 
     def compute(self, df: pd.DataFrame, params: Dict[str, Any]) -> pd.DataFrame:
         """Compute RSI using Wilder's smoothing.

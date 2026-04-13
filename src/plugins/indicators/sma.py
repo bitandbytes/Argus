@@ -20,6 +20,7 @@ class SMACrossoverIndicator(IndicatorPlugin):
     name = "sma_crossover"
     category = "trend"
     version = "1.0.0"
+    output_column = "sma_crossover"
 
     def compute(self, df: pd.DataFrame, params: Dict[str, Any]) -> pd.DataFrame:
         """Compute fast and slow SMAs and their percentage crossover gap.

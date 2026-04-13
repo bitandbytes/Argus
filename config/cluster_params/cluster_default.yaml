@@ -1,0 +1,65 @@
+# Default regime-dependent indicator weights for all clusters.
+#
+# These are the Phase 1 defaults derived from the architecture document (§4.2).
+# Phase 2 will replace this with per-cluster files tuned via walk-forward optimization.
+#
+# Rules:
+#   - Weights must sum to 1.0 per regime (validated at engine init).
+#   - Indicator names must match the `name` class attribute of each IndicatorPlugin.
+#   - "sentiment" is a synthetic key — the QuantEngine injects the FinBERT score
+#     directly (not via a plugin call) with this weight.
+#
+# Strategy rationale per regime:
+#   TRENDING_UP / TRENDING_DOWN:
+#     Trend-following — heavy weight on SMA crossover and MACD.
+#     RSI is down-weighted (momentum continuation, not mean reversion).
+#     Bollinger is de-emphasised (bands widen in trends, %B less useful).
+#     Sentiment gets 10% — news tends to confirm strong trends.
+#
+#   RANGING:
+#     Mean-reversion — RSI and Bollinger dominate (overbought/oversold signals).
+#     SMA and MACD de-emphasised (slow moving averages lag in chop).
+#     Sentiment gets 15% — in quiet markets, news catalysts matter more.
+#
+#   VOLATILE:
+#     Equal-ish spread; no single indicator dominates.
+#     Lower total conviction — RiskManager will halve position size separately.
+#     Sentiment gets 15% — macro/news context is especially important in chaos.
+
+indicators:
+  weights:
+    TRENDING_UP:
+      sma_crossover: 0.35
+      macd: 0.25
+      rsi: 0.10
+      bollinger: 0.10
+      donchian: 0.05
+      volume: 0.05
+      sentiment: 0.10
+
+    TRENDING_DOWN:
+      sma_crossover: 0.35
+      macd: 0.25
+      rsi: 0.10
+      bollinger: 0.10
+      donchian: 0.05
+      volume: 0.05
+      sentiment: 0.10
+
+    RANGING:
+      sma_crossover: 0.10
+      macd: 0.10
+      rsi: 0.25
+      bollinger: 0.25
+      donchian: 0.05
+      volume: 0.10
+      sentiment: 0.15
+
+    VOLATILE:
+      sma_crossover: 0.15
+      macd: 0.15
+      rsi: 0.15
+      bollinger: 0.20
+      donchian: 0.10
+      volume: 0.10
+      sentiment: 0.15
