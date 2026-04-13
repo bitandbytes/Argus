@@ -99,13 +99,26 @@ Development task list organized by phase. Check off tasks as they are completed.
 
 ### 1.6 Regime Detector
 
-- [ ] Implement `RegimeDetector` class with HMM (`hmmlearn`) + ADX dual approach
-- [ ] Train HMM on log returns + realized volatility, n_components=3
-- [ ] Implement `detect()` returning `RegimeType` enum
-- [ ] Add ADX as the fast classifier (ADX > 25 = trending, ADX < 20 = ranging)
-- [ ] Implement reconciliation logic combining HMM and ADX outputs
-- [ ] Persist trained HMM models in `data/models/hmm/` per cluster (or per stock if individual)
-- [ ] Test regime stability: regimes should not flicker daily
+- [x] Implement `RegimeDetector` class with HMM (`hmmlearn`) + ADX dual approach
+  - `src/signals/regime_detector.py` — `fit()`, `detect()`, `detect_series()`, `save()`, `load()`
+  - Layer 1 of the cascade; not a plugin — instantiated directly before QuantEngine
+- [x] Train HMM on log returns + realized volatility, n_components=3
+  - `GaussianHMM(n_components=3, covariance_type="full")` trained on `[log_return_1d, realized_vol_20d]`
+  - Uses last `lookback_days=504` rows; raises `ValueError` if insufficient data
+- [x] Implement `detect()` returning `RegimeType` enum
+  - Uses HMM forward-backward posteriors; returns `RegimeType` for the most recent row
+  - Also implements `detect_series(df)` → `pd.Series[RegimeType]` for bulk/backtest use
+- [x] Add ADX as the fast classifier (ADX > 25 = trending, ADX < 20 = ranging)
+  - `_compute_adx()` uses `pandas_ta.adx(length=14)` — robust to column-name variation
+- [x] Implement reconciliation logic combining HMM and ADX outputs
+  - Priority: VOLATILE (uncertainty > 0.40) → RANGING (ADX < 20) → HMM direction (bull/bear/sideways)
+  - All 5 reconciliation branches unit-tested directly in `TestReconciliation`
+- [x] Persist trained HMM models in `data/models/hmm/` per cluster (or per stock if individual)
+  - `fit()` auto-saves to `data/models/hmm/{ticker}.pkl` via joblib
+  - `save(path)` / `classmethod load(path)` for explicit persistence
+- [x] Test regime stability: regimes should not flicker daily
+  - `TestRegimeStability::test_no_single_day_flicker_in_trending_series` verifies zero isolated flips
+  - HMM transition matrix naturally penalises rapid state changes
 
 ### 1.7 Quant Engine
 
