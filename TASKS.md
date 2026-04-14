@@ -145,13 +145,23 @@ Development task list organized by phase. Check off tasks as they are completed.
 
 ### 1.8 Initial Backtesting
 
-- [ ] Install PyBroker and verify import works
-- [ ] Write `scripts/run_backtest.py` that runs the quant engine on historical data
-- [ ] Configure realistic transaction costs (0.05% commission, 0.05% slippage)
-- [ ] Run backtest on AAPL 2020-2024, compute Sharpe, max drawdown, win rate
-- [ ] Visualize equity curve in a notebook
-- [ ] Compare results against buy-and-hold benchmark
-- [ ] Log all backtest runs to MLflow
+- [x] Install PyBroker and verify import works
+  - PyBroker 1.2.11 confirmed installed; `--verify` flag in run_backtest.py prints version and exits
+- [x] Write `scripts/run_backtest.py` that runs the quant engine on historical data
+  - Pre-computes signals via `generate_series()` (forward-only, no lookahead), feeds into PyBroker
+  - HMM fitted on warmup window (default: start - 730 days) before backtest begins
+- [x] Configure realistic transaction costs (0.05% commission, 0.05% slippage)
+  - `FeeMode.ORDER_PERCENT` with `fee_amount=0.001` (0.1% per order, baked commission + slippage)
+  - `buy_delay=1, sell_delay=1` — fills on next bar's open for realistic execution
+- [x] Run backtest on AAPL 2020-2024, compute Sharpe, max drawdown, win rate
+  - `python scripts/run_backtest.py --ticker AAPL --start 2020-01-01 --end 2024-12-31`
+  - Metrics: sharpe, max_drawdown_pct, win_rate, total_return_pct, profit_factor, calmar, sortino
+- [x] Visualize equity curve in a notebook
+  - `notebooks/backtest_analysis.ipynb` — dual-panel equity + drawdown, monthly heatmap, trade P&L
+- [x] Compare results against buy-and-hold benchmark
+  - `_compute_benchmark()` computes B&H Sharpe, return, max drawdown; printed side-by-side
+- [x] Log all backtest runs to MLflow
+  - `sqlite:///data/mlflow.db`, experiment `argus_backtests`; params + metrics + CSV artifacts logged
 - [ ] See `.claude/skills/backtest-runner/SKILL.md` for backtesting workflow
 
 ### 1.9 Phase 1 Validation Checkpoint
