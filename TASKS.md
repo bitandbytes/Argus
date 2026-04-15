@@ -181,11 +181,11 @@ Development task list organized by phase. Check off tasks as they are completed.
 
 ### 2.1 Triple-Barrier Labeling
 
-- [ ] Implement triple-barrier labeling per López de Prado AFML Chapter 3
-- [ ] Function signature: `triple_barrier_labels(prices, signals, tp_pct, sl_pct, max_holding_days)`
-- [ ] Returns labels: `+1` (TP hit), `-1` (SL hit), `0` (timeout)
-- [ ] Test on synthetic data with known outcomes
-- [ ] See `.claude/skills/ml-meta-labeler/SKILL.md` for full workflow
+- [x] Implement triple-barrier labeling per López de Prado AFML Chapter 3
+- [x] Function signature: `triple_barrier_labels(prices, signals, tp_pct, sl_pct, max_holding_days)`
+- [x] Returns labels: `+1` (TP hit), `-1` (SL hit), `0` (timeout)
+- [x] Test on synthetic data with known outcomes
+- [x] See `.claude/skills/ml-meta-labeler/SKILL.md` for full workflow
 
 ### 2.2 ML Meta-Model
 
