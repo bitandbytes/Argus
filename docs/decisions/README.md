@@ -34,6 +34,8 @@ What becomes easier? What becomes harder? What are the trade-offs?
 | [0006](0006-llm-provider-openai.md) | LLM provider: OpenAI GPT-4o-mini | Accepted |
 | [0007](0007-package-manager-pip.md) | Package manager: pip + requirements.txt | Accepted |
 | [0008](0008-data-provider-yfinance.md) | Data provider: yfinance for prototype | Accepted |
+| [0009](0009-phase1-hmm-viterbi-batch.md) | Phase 1 regime detector uses batch Viterbi in `detect_series()` | Accepted |
+| [0010](0010-phase1-sentiment-stub.md) | Phase 1 sentiment features stubbed to zero | Accepted |
 
 ## Adding a New ADR
 
