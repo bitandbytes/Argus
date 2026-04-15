@@ -66,7 +66,10 @@ class TestMarketDataProviderCaching:
     def test_fetch_ohlcv_uses_cache(self, mdp: MarketDataProvider) -> None:
         """Second fetch should return cached data without calling yfinance again."""
         mock_df = _make_ohlcv()
-        with patch("yfinance.download", return_value=mock_df) as mock_dl:
+        # Patch is_cache_stale so the cached file is treated as fresh regardless
+        # of the mock data's dates (which are in 2024 but the test runs in 2026+).
+        with patch("yfinance.download", return_value=mock_df) as mock_dl, \
+             patch.object(mdp, "is_cache_stale", return_value=False):
             mdp.fetch_ohlcv("AAPL", start="2024-01-01", end="2024-01-10")
             mdp.fetch_ohlcv("AAPL", start="2024-01-01", end="2024-01-10")
         mock_dl.assert_called_once()

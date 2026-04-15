@@ -62,29 +62,42 @@ class FinBERTEnricher(DataEnricher):
             news_provider: ``NewsDataProvider`` instance. Instantiated without
                 args if not provided (Phase 1 stub, safe to call with zero args).
         """
+        self._model_name = model_name
         self._device = torch.device(device)
         self._batch_size = batch_size
         self._cache_dir = Path(cache_dir)
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info("Loading FinBERT model '%s' on %s …", model_name, device)
-        self._tokenizer = AutoTokenizer.from_pretrained(model_name)
-        # use_safetensors=True avoids torch.load CVE-2025-32434 (same fix as
-        # scripts/download_finbert.py).
-        self._model = AutoModelForSequenceClassification.from_pretrained(
-            model_name, use_safetensors=True
-        )
-        self._model.to(self._device)
-        self._model.eval()
-        logger.info("FinBERT ready.")
-
         # FinBERT label order: [0: positive, 1: negative, 2: neutral]
         # Confirmed during task 1.1 sanity-check inference.
         self._news_provider = news_provider or NewsDataProvider()
 
+        # Model and tokenizer are loaded lazily on first inference call.
+        # This allows the registry to instantiate FinBERTEnricher without
+        # network access (Phase 1: NewsDataProvider returns [] so inference
+        # is never triggered; model download only happens when enrich() is
+        # called with real headlines in Phase 3).
+        self._tokenizer = None
+        self._model = None
+
     # ------------------------------------------------------------------ #
     # Core inference                                                        #
     # ------------------------------------------------------------------ #
+
+    def _ensure_model_loaded(self) -> None:
+        """Load tokenizer and model on first use (lazy initialisation)."""
+        if self._tokenizer is not None:
+            return
+        logger.info("Loading FinBERT model '%s' on %s …", self._model_name, self._device)
+        self._tokenizer = AutoTokenizer.from_pretrained(self._model_name)
+        # use_safetensors=True avoids torch.load CVE-2025-32434 (same fix as
+        # scripts/download_finbert.py).
+        self._model = AutoModelForSequenceClassification.from_pretrained(
+            self._model_name, use_safetensors=True
+        )
+        self._model.to(self._device)
+        self._model.eval()
+        logger.info("FinBERT ready.")
 
     def analyze_batch(self, headlines: List[str]) -> List[Dict[str, float]]:
         """
@@ -102,6 +115,7 @@ class FinBERTEnricher(DataEnricher):
         if not headlines:
             return []
 
+        self._ensure_model_loaded()
         results: List[Dict[str, float]] = []
 
         for i in range(0, len(headlines), self._batch_size):
