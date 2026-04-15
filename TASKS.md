@@ -189,13 +189,13 @@ Development task list organized by phase. Check off tasks as they are completed.
 
 ### 2.2 ML Meta-Model
 
-- [ ] Implement `MetaLabelModel` class using XGBoost
-- [ ] Build feature assembly: quant features + sentiment + regime (one-hot) + quant prediction
-- [ ] Train binary classifier: did the quant signal lead to a profitable trade?
-- [ ] Apply Platt scaling via `CalibratedClassifierCV`
-- [ ] Compute calibration curve and Brier score
-- [ ] Save trained model to `data/models/meta_model/` with versioning
-- [ ] Log training run to MLflow with all hyperparameters
+- [x] Implement `MetaLabelModel` class using XGBoost
+- [x] Build feature assembly: quant features + sentiment + regime (one-hot) + quant prediction
+- [x] Train binary classifier: did the quant signal lead to a profitable trade?
+- [x] Apply Platt scaling via `CalibratedClassifierCV`
+- [x] Compute calibration curve and Brier score
+- [x] Save trained model to `data/models/meta_model/` with versioning
+- [x] Log training run to MLflow with all hyperparameters
 
 ### 2.3 Purged Cross-Validation
 
