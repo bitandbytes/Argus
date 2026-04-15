@@ -199,10 +199,10 @@ Development task list organized by phase. Check off tasks as they are completed.
 
 ### 2.3 Purged Cross-Validation
 
-- [ ] Implement `PurgedKFoldCV` per AFML Chapter 7 (or use `timeseriescv` library)
-- [ ] Embargo gap = max signal dependency horizon (e.g., 5 days for 5-day forward returns)
-- [ ] Use this CV split for all meta-model training
-- [ ] Verify it produces non-overlapping folds with proper purging
+- [x] Implement `PurgedKFoldCV` per AFML Chapter 7 (or use `timeseriescv` library)
+- [x] Embargo gap = max signal dependency horizon (e.g., 5 days for 5-day forward returns)
+- [x] Use this CV split for all meta-model training
+- [x] Verify it produces non-overlapping folds with proper purging
 
 ### 2.4 Stock Clustering
 

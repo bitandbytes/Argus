@@ -6,6 +6,7 @@ Covers:
   - MetaLabelModel.predict: shapes, bounds, untrained guard
   - MetaLabelModel.save / load: versioning, metadata.json, roundtrip
   - MetaLabelModel.get_calibration_metrics: keys, Brier on separable data
+  - MetaLabelModel + PurgedCrossValidator integration (Task 2.3)
 """
 
 import json
@@ -363,3 +364,53 @@ class TestMetaLabelModelCalibration:
         model = MetaLabelModel(model_dir=str(tmp_path))
         with pytest.raises(RuntimeError, match="not trained"):
             model.get_calibration_metrics(X, y)
+
+
+# ---------------------------------------------------------------------------
+# MetaLabelModel + PurgedCrossValidator integration (Task 2.3)
+# ---------------------------------------------------------------------------
+
+class TestMetaLabelModelPurgedCV:
+    """Verify MetaLabelModel.train() works correctly with pred/eval times."""
+
+    def _make_times(self, X: pd.DataFrame, holding: int = 5) -> tuple:
+        """Build pred_times and eval_times aligned to X.index."""
+        pred = pd.Series(X.index, index=X.index)
+        eval_ = pred + pd.Timedelta(days=holding)
+        return pred, eval_
+
+    def test_train_with_pred_eval_times_succeeds(self, tmp_path) -> None:
+        """Passing pred_times/eval_times should complete without error."""
+        X, y = _make_xy(n=200)
+        pred, eval_ = self._make_times(X, holding=5)
+        model = MetaLabelModel(model_dir=str(tmp_path))
+        metrics = model.train(X, y, pred_times=pred, eval_times=eval_)
+        assert metrics is not None
+
+    def test_train_with_purged_cv_returns_metrics(self, tmp_path) -> None:
+        """Metrics dict must contain all required keys when using purged CV."""
+        X, y = _make_xy(n=200)
+        pred, eval_ = self._make_times(X)
+        model = MetaLabelModel(model_dir=str(tmp_path))
+        metrics = model.train(X, y, pred_times=pred, eval_times=eval_)
+        for key in ("f1_score", "brier_score", "class_balance", "n_train"):
+            assert key in metrics, f"Missing key '{key}' with purged CV."
+
+    def test_train_without_times_falls_back_gracefully(self, tmp_path) -> None:
+        """Omitting pred/eval times must still train successfully (TimeSeriesSplit fallback)."""
+        X, y = _make_xy(n=200)
+        model = MetaLabelModel(model_dir=str(tmp_path))
+        metrics = model.train(X, y)           # no pred_times / eval_times
+        assert 0.0 <= metrics["f1_score"] <= 1.0
+        assert 0.0 <= metrics["brier_score"] <= 1.0
+
+    def test_predict_works_after_purged_cv_training(self, tmp_path) -> None:
+        """Model trained with purged CV must produce valid predictions."""
+        X, y = _make_xy(n=200)
+        pred, eval_ = self._make_times(X)
+        model = MetaLabelModel(model_dir=str(tmp_path))
+        model.train(X, y, pred_times=pred, eval_times=eval_)
+        proba, uncertainty = model.predict(X)
+        assert proba.shape == (len(X),)
+        assert (proba >= 0.0).all() and (proba <= 1.0).all()
+        assert (uncertainty >= 0.0).all()

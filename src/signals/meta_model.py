@@ -6,7 +6,7 @@ features the quant engine used plus the quant engine's own prediction
 quant signal will be correct (i.e. that the position will hit take-profit
 before stop-loss within ``max_holding_days`` bars).
 
-Training workflow (Task 2.2)::
+Training workflow (Tasks 2.2 + 2.3)::
 
     # 1. Generate historical quant signals
     signals = quant_engine.generate_series(df, regime_series, ticker)
@@ -21,9 +21,13 @@ Training workflow (Task 2.2)::
     X = build_feature_matrix([signals[i] for i in labels.index])
     y = labels["meta_label"]
 
-    # 4. Train and save
+    # 4. Build pred/eval times for purged CV (Task 2.3)
+    pred_times = pd.Series(labels.index, index=labels.index)
+    eval_times = pd.Series(labels["exit_time"].values, index=labels.index)
+
+    # 5. Train with purged cross-validation and save
     model = MetaLabelModel()
-    metrics = model.train(X, y)
+    metrics = model.train(X, y, pred_times=pred_times, eval_times=eval_times)
     model.save()
 
 Production inference::
@@ -49,6 +53,8 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import brier_score_loss, f1_score
 from sklearn.model_selection import TimeSeriesSplit
 
+from src.tuning.purged_cv import PurgedCrossValidator
+
 logger = logging.getLogger(__name__)
 
 # Default XGBoost hyperparameters (overridden by config/settings.yaml at runtime).
@@ -73,10 +79,11 @@ class MetaLabelModel:
     Trained on triple-barrier meta-labels; outputs calibrated
     P(quant_signal_correct) for bet-size computation.
 
-    **Anti-overfitting:**  ``train()`` uses ``TimeSeriesSplit`` inside
-    ``CalibratedClassifierCV`` (no future leakage during calibration) and a
-    separate walk-forward pass with an embargo gap to compute honest OOS
-    F1 and Brier score.
+    **Anti-overfitting:**  When ``pred_times`` and ``eval_times`` are supplied,
+    ``train()`` uses :class:`~src.tuning.purged_cv.PurgedCrossValidator` inside
+    ``CalibratedClassifierCV`` — removing training samples whose labels overlap
+    the test window and enforcing an embargo gap.  Without those timestamps the
+    method falls back to ``TimeSeriesSplit`` for backward compatibility.
 
     **Versioning:** ``save()`` auto-increments the version number from
     existing ``v*.pkl`` files in ``model_dir`` and writes a
@@ -117,6 +124,8 @@ class MetaLabelModel:
         y: pd.Series,
         n_splits: int = 5,
         embargo_days: int = 5,
+        pred_times: Optional[pd.Series] = None,
+        eval_times: Optional[pd.Series] = None,
     ) -> Dict[str, Any]:
         """
         Train XGBoost with Platt calibration on meta-labeled signal data.
@@ -124,24 +133,31 @@ class MetaLabelModel:
         Steps:
 
         1. Validate inputs and compute ``scale_pos_weight`` from class ratio.
-        2. Fit ``CalibratedClassifierCV(TimeSeriesSplit(n_splits))`` — Platt
-           scaling with time-ordered CV.
-        3. Compute OOS F1 and Brier score via a separate walk-forward pass
-           (each fold trains on past data only; ``embargo_days`` gap separates
-           training end from test start to prevent label leakage).
-        4. Log metrics and params to MLflow (best-effort; never fails training).
+        2. Choose CV splitter:
+           - ``pred_times`` + ``eval_times`` provided →
+             :class:`~src.tuning.purged_cv.PurgedCrossValidator` (purged,
+             embargoed; recommended for triple-barrier labels).
+           - Otherwise → ``TimeSeriesSplit`` (backward-compatible fallback).
+        3. Fit ``CalibratedClassifierCV(cv, method="sigmoid")`` — Platt scaling.
+        4. Compute OOS F1 and Brier score via a separate walk-forward pass.
+        5. Log metrics and params to MLflow (best-effort; never fails training).
 
         Args:
             X: Feature matrix (n_signals × ``len(FEATURE_COLUMNS)``).
             y: Binary meta-labels: 1 = signal was correct, 0 = wrong/timeout.
-            n_splits: Number of time-series CV folds (default 5).
-            embargo_days: Bars gap between train end and test start in the
-                walk-forward evaluation (default 5).
+            n_splits: Number of CV folds (default 5).
+            embargo_days: Gap in calendar days between train end and test start
+                (default 5).  Should equal ``max_holding_days`` used in
+                :func:`~src.signals.triple_barrier.triple_barrier_labels`.
+            pred_times: Series of signal-generation timestamps (entry time),
+                same index as ``X``.  Required for purged CV.
+            eval_times: Series of label-resolution timestamps (exit time),
+                same index as ``X``.  Required for purged CV.
 
         Returns:
             Dict with keys:
 
-            * ``f1_score`` — OOS F1 score (weighted average)
+            * ``f1_score`` — OOS F1 score
             * ``brier_score`` — OOS Brier score (lower is better)
             * ``class_balance`` — fraction of positive labels
             * ``n_train`` — total training samples
@@ -175,7 +191,15 @@ class MetaLabelModel:
 
         params = {**self._xgb_params, "scale_pos_weight": scale_pos_weight}
         base_model = xgb.XGBClassifier(**params, verbosity=0)
-        cv = TimeSeriesSplit(n_splits=n_splits)
+
+        use_purged = pred_times is not None and eval_times is not None
+        if use_purged:
+            cv = PurgedCrossValidator(pred_times, eval_times, n_splits, embargo_days)
+            logger.info("Using PurgedCrossValidator (embargo_days=%d).", embargo_days)
+        else:
+            cv = TimeSeriesSplit(n_splits=n_splits)
+            logger.info("pred_times/eval_times not provided; falling back to TimeSeriesSplit.")
+
         self._calibrated = CalibratedClassifierCV(
             base_model, method="sigmoid", cv=cv
         )
@@ -183,7 +207,8 @@ class MetaLabelModel:
 
         # OOS evaluation via walk-forward with embargo
         oos_probas, oos_trues = self._walk_forward_eval(
-            X, y, n_splits, embargo_days
+            X, y, n_splits, embargo_days,
+            pred_times=pred_times, eval_times=eval_times,
         )
         f1 = float(
             f1_score(oos_trues, (oos_probas >= 0.5).astype(int), zero_division=0)
@@ -213,24 +238,37 @@ class MetaLabelModel:
         y: pd.Series,
         n_splits: int,
         embargo_days: int,
+        pred_times: Optional[pd.Series] = None,
+        eval_times: Optional[pd.Series] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Walk-forward OOS evaluation with embargo gap between folds."""
-        n = len(X)
-        fold_size = max(n // (n_splits + 1), 1)
+        """Walk-forward OOS evaluation.
 
+        Uses :class:`~src.tuning.purged_cv.PurgedCrossValidator` when
+        ``pred_times`` and ``eval_times`` are provided; otherwise falls back
+        to the manual index-arithmetic loop.
+        """
         all_probas: List[float] = []
         all_trues: List[int] = []
 
-        for k in range(1, n_splits + 1):
-            train_end = k * fold_size
-            test_start = train_end + embargo_days
-            test_end = min(test_start + fold_size, n)
+        if pred_times is not None and eval_times is not None:
+            # Purged walk-forward: let CombPurgedKFoldCV handle the splits
+            cv = PurgedCrossValidator(pred_times, eval_times, n_splits, embargo_days)
+            folds = list(cv.split(X))
+        else:
+            # Manual index-arithmetic fallback (no pred/eval times)
+            n = len(X)
+            fold_size = max(n // (n_splits + 1), 1)
+            folds = []
+            for k in range(1, n_splits + 1):
+                train_end = k * fold_size
+                test_start = train_end + embargo_days
+                test_end = min(test_start + fold_size, n)
+                if test_start < n and test_end > test_start:
+                    folds.append((np.arange(train_end), np.arange(test_start, test_end)))
 
-            if test_start >= n or test_end <= test_start:
-                continue
-
-            X_tr, y_tr = X.iloc[:train_end], y.iloc[:train_end]
-            X_te, y_te = X.iloc[test_start:test_end], y.iloc[test_start:test_end]
+        for k, (train_idx, test_idx) in enumerate(folds):
+            X_tr, y_tr = X.iloc[train_idx], y.iloc[train_idx]
+            X_te, y_te = X.iloc[test_idx], y.iloc[test_idx]
 
             pos_k = int(y_tr.sum())
             neg_k = int((y_tr == 0).sum())
@@ -248,7 +286,6 @@ class MetaLabelModel:
                 logger.warning("Walk-forward fold %d failed: %s", k, exc)
 
         if not all_probas:
-            # Fallback: in-sample — only used when data is too small to split
             logger.warning(
                 "Walk-forward evaluation produced no OOS predictions; "
                 "falling back to in-sample metrics."
