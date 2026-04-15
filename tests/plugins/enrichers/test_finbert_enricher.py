@@ -91,7 +91,11 @@ def enricher(tmp_path):
         "src.plugins.enrichers.finbert.AutoModelForSequenceClassification.from_pretrained",
         return_value=_make_model_mock(_POS_LOGITS),
     ):
-        yield FinBERTEnricher(cache_dir=str(tmp_path / "cache"))
+        e = FinBERTEnricher(cache_dir=str(tmp_path / "cache"))
+        # FinBERT uses lazy model loading; force load here so that _tokenizer
+        # and _model are populated with mocks before the patch context exits.
+        e._ensure_model_loaded()
+        yield e
 
 
 @pytest.fixture()
@@ -104,7 +108,9 @@ def neg_enricher(tmp_path):
         "src.plugins.enrichers.finbert.AutoModelForSequenceClassification.from_pretrained",
         return_value=_make_model_mock(_NEG_LOGITS),
     ):
-        yield FinBERTEnricher(cache_dir=str(tmp_path / "neg_cache"))
+        e = FinBERTEnricher(cache_dir=str(tmp_path / "neg_cache"))
+        e._ensure_model_loaded()
+        yield e
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +376,8 @@ class TestEnrichOutput:
             }
         ]
 
+        # Keep the patch active for the full scope so that _ensure_model_loaded()
+        # (triggered lazily on first enrich() call) receives the mock objects.
         with patch(
             "src.plugins.enrichers.finbert.AutoTokenizer.from_pretrained",
             return_value=_make_tokenizer_mock(),
@@ -381,8 +389,8 @@ class TestEnrichOutput:
                 cache_dir=str(tmp_path / "cache"),
                 news_provider=mock_provider,
             )
+            result = enricher.enrich("AAPL", None)
 
-        result = enricher.enrich("AAPL", None)
         assert set(result.keys()) == EXPECTED_KEYS
         # With mocked positive logits, score should be > 0
         assert result["sentiment_score"] > 0
@@ -441,6 +449,8 @@ class TestBatchEnrich:
         )
 
         mock_model = _make_model_mock(_POS_LOGITS)
+        # Keep the patch active for the full scope so that _ensure_model_loaded()
+        # (triggered lazily on first batch_enrich() call) receives the mock objects.
         with patch(
             "src.plugins.enrichers.finbert.AutoTokenizer.from_pretrained",
             return_value=_make_tokenizer_mock(),
@@ -452,8 +462,8 @@ class TestBatchEnrich:
                 cache_dir=str(tmp_path / "cache"),
                 news_provider=mock_provider,
             )
+            result = enricher.batch_enrich(["AAPL", "MSFT"])
 
-        result = enricher.batch_enrich(["AAPL", "MSFT"])
         assert set(result.keys()) == {"AAPL", "MSFT"}
         assert result["AAPL"]["sentiment_score"] > 0
         assert result["MSFT"]["sentiment_score"] > 0

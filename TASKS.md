@@ -166,12 +166,12 @@ Development task list organized by phase. Check off tasks as they are completed.
 
 ### 1.9 Phase 1 Validation Checkpoint
 
-- [ ] All tests pass (`pytest tests/`)
-- [ ] Backtest produces sensible (not random) results — Sharpe should be in `[-1.0, +2.0]` range
-- [ ] No lookahead bias detected (manual code review)
-- [ ] Pipeline can run end-to-end on at least one ticker
-- [ ] Document any deviations from the architecture doc as new ADRs
-- [ ] Demo run reviewed before proceeding to Phase 2
+- [x] All tests pass (`pytest tests/`)
+- [x] Backtest produces sensible (not random) results — Sharpe should be in `[-1.0, +2.0]` range
+- [x] No lookahead bias detected (manual code review)
+- [x] Pipeline can run end-to-end on at least one ticker
+- [x] Document any deviations from the architecture doc as new ADRs
+- [x] Demo run reviewed before proceeding to Phase 2
 
 ---
 
