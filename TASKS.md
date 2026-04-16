@@ -206,11 +206,11 @@ Development task list organized by phase. Check off tasks as they are completed.
 
 ### 2.4 Stock Clustering
 
-- [ ] Implement `StockClusterer` class with K-Means and tslearn DTW options
-- [ ] Feature extraction per stock: Hurst exponent, mean ADX, lag-1 autocorr, volatility
-- [ ] Choose `k` via silhouette score (target k=4..8)
-- [ ] Persist cluster assignments to `config/cluster_assignments.yaml`
-- [ ] Test re-clustering: same input data should produce stable assignments
+- [x] Implement `StockClusterer` class with K-Means and tslearn DTW options
+- [x] Feature extraction per stock: Hurst exponent, mean ADX, lag-1 autocorr, volatility
+- [x] Choose `k` via silhouette score (target k=4..8)
+- [x] Persist cluster assignments to `config/cluster_assignments.yaml`
+- [x] Test re-clustering: same input data should produce stable assignments
 
 ### 2.5 Bayesian Tuning with Optuna
 
