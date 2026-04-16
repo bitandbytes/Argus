@@ -214,12 +214,12 @@ Development task list organized by phase. Check off tasks as they are completed.
 
 ### 2.5 Bayesian Tuning with Optuna
 
-- [ ] Implement `BayesianTuner` wrapping Optuna
-- [ ] Define search space from each plugin's `get_tunable_params()`
-- [ ] Objective: maximize OOS Sharpe ratio
-- [ ] Use TPE sampler with 100 trials per cluster
-- [ ] Log every trial to MLflow
-- [ ] Implement parameter stability check across adjacent windows
+- [x] Implement `BayesianTuner` wrapping Optuna
+- [x] Define search space from each plugin's `get_tunable_params()`
+- [x] Objective: maximize OOS Sharpe ratio
+- [x] Use TPE sampler with 100 trials per cluster
+- [x] Log every trial to MLflow
+- [x] Implement parameter stability check across adjacent windows
 
 ### 2.6 Walk-Forward Optimization
 
