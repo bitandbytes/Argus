@@ -236,11 +236,16 @@ Development task list organized by phase. Check off tasks as they are completed.
 
 ### 2.7 Promotion Gate
 
-- [ ] Implement `PromotionGate` class with criteria from architecture doc
-- [ ] Check: history ≥ 2500 bars, individual Sharpe > cluster × 1.20, param drift < 20%, PBO < 0.40
-- [ ] Write promoted parameters to `config/stock_overrides/{ticker}.yaml`
-- [ ] Implement demotion logic: revert if rolling 60-day Sharpe drops > 0.30 below cluster
-- [ ] Log all promotion/demotion decisions to `config/promotion_log.yaml`
+- [x] Implement `PromotionGate` class with criteria from architecture doc
+  - `src/tuning/promotion_gate.py` — `PromotionDecision` dataclass + `evaluate/promote/demote/check_demotion/log_decision/resolve_params_path/is_promoted/list_promoted` methods. Thresholds loaded from `config/settings.yaml::tuning.promotion`. Orchestration wrapper in `scripts/tune_individual.py` runs WFO per ticker and calls the gate.
+- [x] Check: history ≥ 2500 bars, individual Sharpe > cluster × 1.20, param drift < 20%, PBO < 0.40
+  - All four criteria enforced in `evaluate()` (in order: history → Sharpe lift → stability → PBO). PBO prefers `WFOResult.cpcv_pbo` and falls back to per-window `pbo`. Cluster Sharpe ≤ 0 edge case requires an absolute lift ≥ 0.10 instead of a ratio.
+- [x] Write promoted parameters to `config/stock_overrides/{ticker}.yaml`
+  - Atomic temp-file + `shutil.move` write; carries cluster regime weights forward unchanged and embeds stock-specific `indicators.params` (via `BayesianTuner.unpack_params_static`). Metadata captures PBO/CPCV-PBO/stability/decision reasons for post-hoc auditing. `resolve_params_path()` gives downstream code the overrides → cluster → default fallback chain.
+- [x] Implement demotion logic: revert if rolling 60-day Sharpe drops > 0.30 below cluster
+  - `check_demotion()` (NaN/inf-safe predicate reading `tuning.promotion.demotion_sharpe_gap`) paired with `demote()` (deletes the override file). Phase 3's daily pipeline will invoke these once paper-trading fills supply the rolling live Sharpe.
+- [x] Log all promotion/demotion decisions to `config/promotion_log.yaml`
+  - `log_decision()` — read / modify / atomic-write append under the `decisions:` key, preserving every prior entry. `scripts/tune_individual.py` logs every evaluated ticker (promoted, kept, or skipped-for-history).
 
 ### 2.8 Phase 2 Validation Checkpoint
 
