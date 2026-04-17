@@ -223,11 +223,11 @@ Development task list organized by phase. Check off tasks as they are completed.
 
 ### 2.6 Walk-Forward Optimization
 
-- [ ] Implement `WalkForwardOptimizer` with rolling 252/126 day windows
-- [ ] Optimize on in-sample, evaluate on out-of-sample
-- [ ] Concatenate all OOS results for aggregate metrics
-- [ ] Compute Probability of Backtest Overfitting (PBO) via CPCV
-- [ ] Output validated parameters to `config/cluster_params/cluster_{id}.yaml`
+- [x] Implement `WalkForwardOptimizer` with rolling 252/126 day windows
+- [x] Optimize on in-sample, evaluate on out-of-sample
+- [x] Concatenate all OOS results for aggregate metrics
+- [x] Compute Probability of Backtest Overfitting (PBO) via CPCV
+- [x] Output validated parameters to `config/cluster_params/cluster_{id}.yaml`
 
 ### 2.7 Promotion Gate
 
