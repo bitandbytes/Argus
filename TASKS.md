@@ -223,11 +223,16 @@ Development task list organized by phase. Check off tasks as they are completed.
 
 ### 2.6 Walk-Forward Optimization
 
-- [ ] Implement `WalkForwardOptimizer` with rolling 252/126 day windows
-- [ ] Optimize on in-sample, evaluate on out-of-sample
-- [ ] Concatenate all OOS results for aggregate metrics
-- [ ] Compute Probability of Backtest Overfitting (PBO) via CPCV
-- [ ] Output validated parameters to `config/cluster_params/cluster_{id}.yaml`
+- [x] Implement `WalkForwardOptimizer` with rolling 252/126 day windows
+  - `src/tuning/walk_forward.py` — step size = `out_of_sample_days` (non-overlapping OOS); enforces ≥3 windows; defaults pulled from `config/settings.yaml::tuning.{in_sample_days,out_of_sample_days}`.
+- [x] Optimize on in-sample, evaluate on out-of-sample
+  - `_run_window()` invokes `BayesianTuner.tune()` on the IS slice, then evaluates the top-k IS candidates on OOS for feeding PBO. Per-window stability check delegates to `BayesianTuner.stability_check` (20% drift threshold).
+- [x] Concatenate all OOS results for aggregate metrics
+  - `WFOResult.aggregate_oos_sharpe` = mean of per-window OOS Sharpes; full per-window series preserved in `WFOResult.windows[i].oos_sharpe`. CPCV (below) provides the stronger overfitting-aware aggregate called out by the architecture doc.
+- [x] Compute Probability of Backtest Overfitting (PBO) via CPCV
+  - `CombinatorialPurgedCV` (from Task 2.3) wired into `WalkForwardOptimizer.optimize()` and runs on the full dataset with the tuned `best_params`. Result populates `WFOResult.cpcv_pbo` (additive — coexists with the fast per-window `pbo`). CPCV failures are non-fatal and set `cpcv_pbo=None`. Knobs under `config/settings.yaml::tuning.cpcv` (`enabled`, `n_groups`, `n_test_groups`, `embargo_days`; defaults 10/2/5 → 45 paths).
+- [x] Output validated parameters to `config/cluster_params/cluster_{id}.yaml`
+  - `scripts/tune_clusters.py` — per-cluster WFO; aggregates OOS Sharpe, `pbo`, and `cpcv_pbo` across the cluster's tickers; writes `metadata` (incl. `cpcv_pbo`, `pbo_pass`, `pbo_source`, `is_stable`, `n_windows`) + `indicators.params` to YAML atomically. Promotion gate prefers `cpcv_pbo` when available, falls back to per-window `pbo`. QuantEngine already reads `indicators.params` via `_load_plugin_params`.
 
 ### 2.7 Promotion Gate
 

@@ -38,6 +38,7 @@ import pandas as pd
 
 from src.plugins.base import IndicatorPlugin, SmoothingPlugin
 from src.tuning.bayesian_tuner import BayesianTuner, OptimizationResult
+from src.tuning.purged_cv import CombinatorialPurgedCV
 
 logger = logging.getLogger(__name__)
 
@@ -89,9 +90,18 @@ class WFOResult:
         ticker: Stock symbol this WFO was run for.
         windows: Ordered list of per-window results (earliest first).
         best_params: Params from the window with the highest OOS Sharpe.
-        aggregate_oos_sharpe: Mean OOS Sharpe across all windows.
-        pbo: Probability of Backtest Overfitting ∈ [0, 1].  Computed from the
-            top-k IS candidate parameter sets per window.
+        aggregate_oos_sharpe: Mean OOS Sharpe across all rolling windows.
+            The full per-window series is available via ``windows[i].oos_sharpe``
+            for callers that need an OOS concatenation.  CPCV (see
+            ``cpcv_pbo``) provides a stronger overfitting-aware aggregate.
+        pbo: Per-window PBO ∈ [0, 1] — fraction of windows where the IS-best
+            candidate ranks below the median OOS Sharpe among its top-k peers.
+            Fast, cheap, computed from the rolling-window loop.
+        cpcv_pbo: Combinatorial-purged PBO ∈ [0, 1] — fraction of CPCV paths
+            where the tuned params rank below the median OOS Sharpe across
+            all paths.  ``None`` when CPCV is disabled or failed.
+        cpcv_n_paths: Number of successful CPCV evaluations that fed
+            ``cpcv_pbo`` (0 when CPCV did not run).
         is_stable: ``True`` iff every window passes the parameter-drift check.
         n_windows: Total number of rolling windows evaluated.
         best_window_idx: Index of the window that produced ``best_params``.
@@ -105,6 +115,8 @@ class WFOResult:
     is_stable: bool
     n_windows: int
     best_window_idx: int = field(default=0)
+    cpcv_pbo: Optional[float] = None
+    cpcv_n_paths: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +142,15 @@ class WalkForwardOptimizer:
             computation (default 10).  Must be ≥ 2 for meaningful PBO.
         seed: Random seed for reproducibility (passed to ``BayesianTuner``).
         mlflow_tracking: Whether to log per-run metrics to MLflow (default True).
+        run_cpcv: Whether to run Combinatorial Purged Cross-Validation after
+            the rolling-window loop to compute a true CPCV PBO on the full
+            dataset (default True).  Set False for smoke tests where CPCV's
+            extra ``C(n_groups, n_test_groups)`` objective calls are too costly.
+        cpcv_n_groups: Number of sequential groups for CPCV (default 10).
+        cpcv_n_test_groups: Number of test groups per CPCV combination
+            (default 2).  Yields ``C(10, 2) = 45`` paths at the defaults.
+        cpcv_embargo_days: Calendar-day embargo between CPCV IS and OOS
+            slices (default 5).
     """
 
     def __init__(
@@ -140,6 +161,10 @@ class WalkForwardOptimizer:
         pbo_top_k: int = 10,
         seed: int = 42,
         mlflow_tracking: bool = True,
+        run_cpcv: bool = True,
+        cpcv_n_groups: int = 10,
+        cpcv_n_test_groups: int = 2,
+        cpcv_embargo_days: int = 5,
     ) -> None:
         if in_sample_days < 30:
             raise ValueError(f"in_sample_days must be >= 30, got {in_sample_days}")
@@ -156,6 +181,10 @@ class WalkForwardOptimizer:
         self.pbo_top_k = pbo_top_k
         self.seed = seed
         self.mlflow_tracking = mlflow_tracking
+        self.run_cpcv = run_cpcv
+        self.cpcv_n_groups = cpcv_n_groups
+        self.cpcv_n_test_groups = cpcv_n_test_groups
+        self.cpcv_embargo_days = cpcv_embargo_days
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -236,25 +265,37 @@ class WalkForwardOptimizer:
             agg_oos = float(np.mean(oos_sharpes)) if oos_sharpes else 0.0
             best_idx = int(np.argmax(oos_sharpes)) if oos_sharpes else 0
             overall_stable = all(w.is_stable for w in window_results)
+            final_best_params = window_results[best_idx].best_params
+
+            cpcv_pbo, cpcv_n_paths = self._compute_cpcv_pbo(
+                df=df,
+                best_params=final_best_params,
+                objective_fn=objective_fn,
+            )
 
             result = WFOResult(
                 ticker=ticker,
                 windows=window_results,
-                best_params=window_results[best_idx].best_params,
+                best_params=final_best_params,
                 aggregate_oos_sharpe=agg_oos,
                 pbo=pbo,
                 is_stable=overall_stable,
                 n_windows=len(window_results),
                 best_window_idx=best_idx,
+                cpcv_pbo=cpcv_pbo,
+                cpcv_n_paths=cpcv_n_paths,
             )
 
             if self.mlflow_tracking:
                 self._log_summary(result)
 
             logger.info(
-                "WFO complete: ticker=%s, windows=%d, agg_oos_sharpe=%.4f, pbo=%.4f, stable=%s",
+                "WFO complete: ticker=%s, windows=%d, agg_oos_sharpe=%.4f, "
+                "pbo=%.4f, cpcv_pbo=%s (%d paths), stable=%s",
                 ticker, result.n_windows, result.aggregate_oos_sharpe,
-                result.pbo, result.is_stable,
+                result.pbo,
+                f"{result.cpcv_pbo:.4f}" if result.cpcv_pbo is not None else "N/A",
+                result.cpcv_n_paths, result.is_stable,
             )
             return result
 
@@ -530,6 +571,77 @@ class WalkForwardOptimizer:
         return pbo
 
     # ------------------------------------------------------------------ #
+    # CPCV-based PBO                                                        #
+    # ------------------------------------------------------------------ #
+
+    def _compute_cpcv_pbo(
+        self,
+        df: pd.DataFrame,
+        best_params: _ParamDict,
+        objective_fn: _ObjectiveFn,
+    ) -> Tuple[Optional[float], int]:
+        """Run Combinatorial Purged CV on the full dataset and return (pbo, n_paths).
+
+        CPCV is additive to the rolling-window PBO.  The tuned ``best_params``
+        are treated as the chosen strategy; CPCV splits the full dataset into
+        ``cpcv_n_groups`` sequential groups and evaluates the strategy on every
+        ``C(n_groups, n_test_groups)`` combination of train/test splits.  The
+        resulting ``(is_sharpe, oos_sharpe)`` pairs feed
+        :meth:`CombinatorialPurgedCV.compute_pbo`.
+
+        Any failure (dataset too short, strategy_fn error, etc.) is caught and
+        logged — CPCV is never allowed to break the WFO run.
+
+        Args:
+            df: Full OHLCV DataFrame (same as passed to :meth:`optimize`).
+            best_params: Tuned parameter set to evaluate across CPCV paths.
+            objective_fn: Same callable passed to :meth:`optimize`.
+
+        Returns:
+            ``(pbo, n_paths)``.  ``pbo`` is ``None`` when disabled, when
+            fewer than 2 paths succeed, or when an exception is raised.
+        """
+        if not self.run_cpcv:
+            return None, 0
+
+        min_rows = self.cpcv_n_groups * 20
+        if len(df) < min_rows:
+            logger.warning(
+                "CPCV skipped: dataset has %d rows, need >= %d for n_groups=%d.",
+                len(df), min_rows, self.cpcv_n_groups,
+            )
+            return None, 0
+
+        def strategy_fn(
+            is_df: pd.DataFrame, oos_df: pd.DataFrame
+        ) -> Tuple[float, float]:
+            is_s = float(objective_fn(best_params, is_df))
+            oos_s = float(objective_fn(best_params, oos_df))
+            return is_s, oos_s
+
+        try:
+            cpcv = CombinatorialPurgedCV(
+                n_groups=self.cpcv_n_groups,
+                n_test_groups=self.cpcv_n_test_groups,
+                embargo_days=self.cpcv_embargo_days,
+            )
+            results = cpcv.run(strategy_fn, df)
+        except Exception as exc:
+            logger.warning("CPCV run failed (%s) — cpcv_pbo will be None.", exc)
+            return None, 0
+
+        if len(results) < 2:
+            logger.warning(
+                "CPCV produced %d usable paths (< 2) — cpcv_pbo will be None.",
+                len(results),
+            )
+            return None, len(results)
+
+        pbo = float(CombinatorialPurgedCV.compute_pbo(results))
+        logger.info("CPCV PBO = %.4f across %d paths.", pbo, len(results))
+        return pbo, len(results)
+
+    # ------------------------------------------------------------------ #
     # MLflow helpers                                                       #
     # ------------------------------------------------------------------ #
 
@@ -559,6 +671,9 @@ class WalkForwardOptimizer:
             mlflow.log_metric("wfo/pbo", result.pbo)
             mlflow.log_metric("wfo/n_windows", float(result.n_windows))
             mlflow.log_metric("wfo/is_stable", float(result.is_stable))
+            if result.cpcv_pbo is not None:
+                mlflow.log_metric("wfo/cpcv_pbo", result.cpcv_pbo)
+            mlflow.log_metric("wfo/cpcv_n_paths", float(result.cpcv_n_paths))
             for k, v in result.best_params.items():
                 if isinstance(v, (int, float)):
                     mlflow.log_param(f"wfo_best/{k}", v)

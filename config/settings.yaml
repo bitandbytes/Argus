@@ -60,6 +60,14 @@ tuning:
   out_of_sample_days: 126
   n_clusters: 5
   recluster_frequency: "quarterly"
+  # Combinatorial Purged CV — computes the López de Prado PBO on the full
+  # dataset after walk-forward optimization has chosen best_params.
+  # See src/tuning/purged_cv.py::CombinatorialPurgedCV for the algorithm.
+  cpcv:
+    enabled: true
+    n_groups: 10          # sequential groups; C(10, 2) = 45 paths at defaults
+    n_test_groups: 2      # test groups per combination
+    embargo_days: 5       # calendar-day gap between IS end and OOS start
   promotion:
     min_history_bars: 2500
     sharpe_improvement_threshold: 1.20

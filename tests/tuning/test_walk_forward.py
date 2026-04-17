@@ -240,6 +240,79 @@ class TestOptimize:
 
 
 # ---------------------------------------------------------------------------
+# TestWFOCPCVIntegration
+# ---------------------------------------------------------------------------
+
+class TestWFOCPCVIntegration:
+    """Verify that CombinatorialPurgedCV is wired into optimize()."""
+
+    def _make_optimizer(self, run_cpcv: bool = True, **kwargs: Any) -> WalkForwardOptimizer:
+        return WalkForwardOptimizer(
+            in_sample_days=50,
+            out_of_sample_days=25,
+            n_trials=3,
+            pbo_top_k=2,
+            mlflow_tracking=False,
+            run_cpcv=run_cpcv,
+            cpcv_n_groups=5,
+            cpcv_n_test_groups=2,
+            cpcv_embargo_days=0,
+            **kwargs,
+        )
+
+    def test_cpcv_pbo_populated_when_enabled(self) -> None:
+        opt = self._make_optimizer(run_cpcv=True)
+        df = _make_ohlcv(n=250)
+        result = opt.optimize(df, "T", _dummy_objective, [_SimplePlugin()])
+        # With n_groups=5, n_test_groups=2 → C(5, 2) = 10 paths.
+        assert result.cpcv_pbo is not None
+        assert 0.0 <= result.cpcv_pbo <= 1.0
+        assert result.cpcv_n_paths > 0
+
+    def test_cpcv_disabled_returns_none(self) -> None:
+        opt = self._make_optimizer(run_cpcv=False)
+        df = _make_ohlcv(n=250)
+        result = opt.optimize(df, "T", _dummy_objective, [_SimplePlugin()])
+        assert result.cpcv_pbo is None
+        assert result.cpcv_n_paths == 0
+
+    def test_cpcv_failure_is_noncritical(self) -> None:
+        """An exception inside CombinatorialPurgedCV.run must not break WFO."""
+        opt = self._make_optimizer(run_cpcv=True)
+        df = _make_ohlcv(n=250)
+        with patch(
+            "src.tuning.walk_forward.CombinatorialPurgedCV.run",
+            side_effect=RuntimeError("simulated CPCV failure"),
+        ):
+            result = opt.optimize(df, "T", _dummy_objective, [_SimplePlugin()])
+        assert isinstance(result, WFOResult)
+        assert result.cpcv_pbo is None
+        assert result.cpcv_n_paths == 0
+
+    def test_cpcv_skipped_when_dataset_too_short(self) -> None:
+        # cpcv_n_groups=5 needs >= 5*20 = 100 rows; use 99 to force skip.
+        opt = WalkForwardOptimizer(
+            in_sample_days=30, out_of_sample_days=15, n_trials=2,
+            pbo_top_k=2, mlflow_tracking=False,
+            run_cpcv=True, cpcv_n_groups=5,
+        )
+        df = _make_ohlcv(n=99)
+        result = opt.optimize(df, "T", _dummy_objective, [_SimplePlugin()])
+        assert result.cpcv_pbo is None
+        assert result.cpcv_n_paths == 0
+
+    def test_existing_pbo_unchanged_by_cpcv(self) -> None:
+        """The existing per-window pbo field is additive — not replaced."""
+        opt = self._make_optimizer(run_cpcv=True)
+        df = _make_ohlcv(n=250)
+        result = opt.optimize(df, "T", _dummy_objective, [_SimplePlugin()])
+        assert 0.0 <= result.pbo <= 1.0
+        # Both coexist.
+        assert hasattr(result, "pbo")
+        assert hasattr(result, "cpcv_pbo")
+
+
+# ---------------------------------------------------------------------------
 # TestWFOWindowResult
 # ---------------------------------------------------------------------------
 
@@ -432,3 +505,24 @@ class TestMLflowIntegration:
         with patch("mlflow.start_run") as mock_sr:
             opt.optimize(df, "T", _dummy_objective, [_SimplePlugin()])
             mock_sr.assert_not_called()
+
+    def test_mlflow_logs_cpcv_pbo_when_enabled(self) -> None:
+        """Verify wfo/cpcv_pbo metric is logged to MLflow."""
+        opt = WalkForwardOptimizer(
+            in_sample_days=50, out_of_sample_days=25, n_trials=2,
+            pbo_top_k=2, mlflow_tracking=True,
+            run_cpcv=True, cpcv_n_groups=5, cpcv_n_test_groups=2,
+            cpcv_embargo_days=0,
+        )
+        df = _make_ohlcv(n=250)
+        mock_run = MagicMock()
+        mock_run.__enter__ = MagicMock(return_value=mock_run)
+        mock_run.__exit__ = MagicMock(return_value=False)
+        with patch("mlflow.start_run", return_value=mock_run), \
+             patch("mlflow.log_metric") as mock_log_metric, \
+             patch("mlflow.log_param"), \
+             patch("mlflow.active_run", return_value=MagicMock()):
+            opt.optimize(df, "T", _dummy_objective, [_SimplePlugin()])
+            logged_metric_names = [call.args[0] for call in mock_log_metric.call_args_list]
+            assert "wfo/cpcv_pbo" in logged_metric_names
+            assert "wfo/cpcv_n_paths" in logged_metric_names
