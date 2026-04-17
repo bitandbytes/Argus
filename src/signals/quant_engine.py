@@ -15,7 +15,7 @@ Design principles (from quant-engine-dev skill):
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import yaml
@@ -23,6 +23,8 @@ import yaml
 from src.models.trade_signal import RegimeType, TradeSignal
 from src.plugins.base import IndicatorPlugin
 from src.plugins.registry import PluginRegistry
+
+_AnyParams = Dict[str, Any]
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +114,9 @@ class QuantEngine:
         self.regime_weights: Dict[RegimeType, Dict[str, float]] = self._load_regime_weights(
             params_path
         )
+        # Per-plugin param overrides from the cluster/stock YAML (``indicators.params`` section).
+        # Empty dict means "use each plugin's own get_default_params()".
+        self._plugin_params: Dict[str, Dict[str, Any]] = self._load_plugin_params(params_path)
 
         logger.info(
             "QuantEngine ready — %d indicators, entry_threshold=%.2f, mtf_boost=%.2f",
@@ -130,6 +135,7 @@ class QuantEngine:
         regime: RegimeType,
         ticker: str,
         sentiment_score: float = 0.0,
+        plugin_params: Optional[Dict[str, _AnyParams]] = None,
     ) -> TradeSignal:
         """
         Generate a trade signal for the most recent bar in df.
@@ -141,12 +147,16 @@ class QuantEngine:
             ticker: Stock ticker symbol (used for logging and TradeSignal).
             sentiment_score: FinBERT score in [-1, +1]. Defaults to 0.0
                 (Phase 1 stub — wire up FinBERTEnricher in Phase 3).
+            plugin_params: Optional per-plugin param overrides ``{plugin_name:
+                {param: value}}``. Overrides both the cluster YAML params and
+                each plugin's own ``get_default_params()``. Pass ``None`` to
+                use the YAML-loaded defaults (backward-compatible).
 
         Returns:
             :class:`TradeSignal` with direction, confidence, and all indicator
             scores captured in ``features``.
         """
-        scores: Dict[str, float] = self._compute_scores(df, ticker)
+        scores: Dict[str, float] = self._compute_scores(df, ticker, plugin_params)
         scores["sentiment"] = float(sentiment_score)
 
         composite = self._weighted_composite(scores, regime)
@@ -172,6 +182,7 @@ class QuantEngine:
         regime_series: "pd.Series[RegimeType]",
         ticker: str,
         sentiment_series: Optional[pd.Series] = None,
+        plugin_params: Optional[Dict[str, _AnyParams]] = None,
     ) -> pd.Series:
         """
         Generate a TradeSignal for every bar in df (forward-only, for backtesting).
@@ -200,7 +211,7 @@ class QuantEngine:
                 else 0.0
             )
             try:
-                sig = self.generate_signal(window, regime, ticker, sent)
+                sig = self.generate_signal(window, regime, ticker, sent, plugin_params)
             except Exception:
                 sig = TradeSignal(
                     ticker=ticker,
@@ -221,6 +232,7 @@ class QuantEngine:
         regime: RegimeType,
         ticker: str,
         sentiment_score: float = 0.0,
+        plugin_params: Optional[Dict[str, _AnyParams]] = None,
     ) -> bool:
         """
         Determine whether to exit an open position.
@@ -239,7 +251,7 @@ class QuantEngine:
         Returns:
             True if the position should be closed.
         """
-        signal = self.generate_signal(df, regime, ticker, sentiment_score)
+        signal = self.generate_signal(df, regime, ticker, sentiment_score, plugin_params)
 
         if regime in (RegimeType.TRENDING_UP, RegimeType.TRENDING_DOWN):
             return (position_direction > 0 and signal.direction < -0.20) or (
@@ -251,7 +263,12 @@ class QuantEngine:
     # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
 
-    def _compute_scores(self, df: pd.DataFrame, ticker: str) -> Dict[str, float]:
+    def _compute_scores(
+        self,
+        df: pd.DataFrame,
+        ticker: str,
+        plugin_params: Optional[Dict[str, _AnyParams]] = None,
+    ) -> Dict[str, float]:
         """
         Run each indicator, normalize its output, and return the latest value.
 
@@ -261,13 +278,18 @@ class QuantEngine:
         Args:
             df: OHLCV DataFrame.
             ticker: Used only for warning messages.
+            plugin_params: Optional per-plugin param overrides. Resolution order:
+                1. ``plugin_params[ind.name]`` (caller-supplied, e.g. from WFO)
+                2. ``self._plugin_params[ind.name]`` (loaded from cluster YAML)
+                3. ``ind.get_default_params()`` (plugin's own defaults)
 
         Returns:
             Dict mapping indicator name → normalized score in [-1, +1].
         """
         scores: Dict[str, float] = {}
+        effective_overrides = plugin_params if plugin_params is not None else self._plugin_params
         for ind in self._indicators:
-            params = ind.get_default_params()
+            params = effective_overrides.get(ind.name, ind.get_default_params())
             try:
                 enriched = ind.compute(df, params)
                 col = ind.output_column
@@ -449,3 +471,38 @@ class QuantEngine:
                 result[regime] = {name: 1.0 / n for name in active_names}
 
         return result
+
+    def _load_plugin_params(
+        self, params_path: Optional[str]
+    ) -> Dict[str, Dict[str, Any]]:
+        """Load optional per-plugin param overrides from a cluster/stock YAML.
+
+        Reads the ``indicators.params`` section if present.  Returns an empty
+        dict if the section is absent or the file cannot be found — in that case
+        ``_compute_scores`` will fall through to each plugin's own defaults.
+
+        Args:
+            params_path: Path to the YAML file (same file as regime weights).
+
+        Returns:
+            Dict mapping plugin name → param dict.  Empty dict = use defaults.
+        """
+        candidates = []
+        if params_path:
+            candidates.append(Path(params_path))
+        candidates.append(Path(_DEFAULT_PARAMS_PATH))
+
+        for candidate in candidates:
+            if candidate.exists():
+                with open(candidate) as f:
+                    data = yaml.safe_load(f)
+                raw = data.get("indicators", {}).get("params", {})
+                if raw:
+                    logger.info(
+                        "Loaded plugin params overrides from '%s': %s",
+                        candidate,
+                        list(raw.keys()),
+                    )
+                return dict(raw) if raw else {}
+
+        return {}

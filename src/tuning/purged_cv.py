@@ -26,8 +26,9 @@ Usage standalone::
         ...
 """
 
+import itertools
 import logging
-from typing import Iterator, Tuple
+from typing import Callable, Iterator, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -185,3 +186,147 @@ def purged_walk_forward_splits(
     """
     cv = PurgedCrossValidator(pred_times, eval_times, n_splits, embargo_days)
     yield from cv.split(X)
+
+
+# ---------------------------------------------------------------------------
+# CombinatorialPurgedCV — CPCV-based PBO calculator
+# ---------------------------------------------------------------------------
+
+class CombinatorialPurgedCV:
+    """Combinatorial Purged Cross-Validation for Probability of Backtest Overfitting.
+
+    Implements the CPCV framework from López de Prado's "Advances in Financial
+    Machine Learning" (Chapter 12).  The data is divided into ``n_groups``
+    sequential groups; all ``C(n_groups, n_test_groups)`` combinations of test
+    groups are generated.  For each combination the caller-supplied
+    ``strategy_fn(is_df, oos_df)`` is invoked, returning a
+    ``(is_sharpe, oos_sharpe)`` pair.
+
+    ``compute_pbo()`` then measures what fraction of paths have an OOS Sharpe
+    below the median — indicating that the strategy is likely overfit.
+
+    Usage::
+
+        from src.tuning.purged_cv import CombinatorialPurgedCV
+
+        cpcv = CombinatorialPurgedCV(n_groups=10, n_test_groups=2, embargo_days=5)
+        results = cpcv.run(strategy_fn, data)
+        pbo = cpcv.compute_pbo(results)
+        assert pbo < 0.40, "Strategy likely overfit — do not deploy"
+
+    Args:
+        n_groups: Number of sequential groups to split the data into (default 10).
+        n_test_groups: Number of groups to use as the test set per combination
+            (default 2).  Must be < ``n_groups``.
+        embargo_days: Calendar-day gap applied between the IS end and OOS start
+            to prevent leakage from correlated returns (default 5).
+    """
+
+    def __init__(
+        self,
+        n_groups: int = 10,
+        n_test_groups: int = 2,
+        embargo_days: int = 5,
+    ) -> None:
+        if n_groups < 3:
+            raise ValueError(f"n_groups must be >= 3, got {n_groups}")
+        if n_test_groups < 1 or n_test_groups >= n_groups:
+            raise ValueError(
+                f"n_test_groups must be in [1, n_groups), got {n_test_groups}"
+            )
+        self.n_groups = n_groups
+        self.n_test_groups = n_test_groups
+        self.embargo_days = embargo_days
+
+    # ------------------------------------------------------------------ #
+    # Public API                                                           #
+    # ------------------------------------------------------------------ #
+
+    def run(
+        self,
+        strategy_fn: Callable[[pd.DataFrame, pd.DataFrame], Tuple[float, float]],
+        data: pd.DataFrame,
+    ) -> List[Tuple[float, float]]:
+        """Evaluate ``strategy_fn`` on all CPCV combinations.
+
+        The data is split into ``n_groups`` equal-sized sequential slices.
+        For each ``C(n_groups, n_test_groups)`` combination the test slices are
+        concatenated as OOS data; all remaining slices are concatenated as IS
+        data with a ``embargo_days``-day gap applied at each IS/OOS boundary.
+
+        Args:
+            strategy_fn: ``Callable[[is_df, oos_df], Tuple[float, float]]``
+                returning ``(IS_sharpe, OOS_sharpe)``.  Receives contiguous
+                pandas DataFrames indexed by date.
+            data: Full OHLCV (or feature) DataFrame indexed by date.
+
+        Returns:
+            List of ``(IS_sharpe, OOS_sharpe)`` tuples, one per CPCV
+            combination.  Length = ``C(n_groups, n_test_groups)``.
+        """
+        groups = self._split_groups(data)
+        results: List[Tuple[float, float]] = []
+
+        for test_indices in itertools.combinations(range(self.n_groups), self.n_test_groups):
+            test_idx_set = set(test_indices)
+            train_idx_list = [i for i in range(self.n_groups) if i not in test_idx_set]
+
+            is_df = pd.concat([groups[i] for i in train_idx_list])
+            oos_df = pd.concat([groups[i] for i in sorted(test_indices)])
+
+            # Apply embargo: drop IS rows within embargo_days of OOS start.
+            if self.embargo_days > 0 and len(oos_df) > 0:
+                oos_start = oos_df.index[0]
+                cutoff = oos_start - pd.Timedelta(days=self.embargo_days)
+                is_df = is_df[is_df.index <= cutoff]
+
+            if len(is_df) < 2 or len(oos_df) < 2:
+                logger.debug("Skipping CPCV combination %s: insufficient data after embargo", test_indices)
+                continue
+
+            try:
+                pair = strategy_fn(is_df, oos_df)
+                results.append((float(pair[0]), float(pair[1])))
+            except Exception as exc:
+                logger.warning("strategy_fn failed for CPCV combination %s: %s", test_indices, exc)
+
+        logger.info(
+            "CombinatorialPurgedCV: %d combinations evaluated, %d succeeded",
+            len(list(itertools.combinations(range(self.n_groups), self.n_test_groups))),
+            len(results),
+        )
+        return results
+
+    @staticmethod
+    def compute_pbo(results: List[Tuple[float, float]]) -> float:
+        """Compute PBO from a list of (IS_sharpe, OOS_sharpe) pairs.
+
+        PBO = fraction of paths where the OOS Sharpe is below the median OOS
+        Sharpe across all paths.  A value above 0.50 means the strategy is more
+        likely to fail live than succeed.
+
+        Args:
+            results: List of ``(IS_sharpe, OOS_sharpe)`` pairs as returned by
+                :meth:`run`.
+
+        Returns:
+            PBO ∈ [0, 1].  Returns 0.0 for empty results.
+        """
+        if not results:
+            logger.warning("compute_pbo called with empty results — returning 0.0")
+            return 0.0
+
+        oos_sharpes = np.array([r[1] for r in results], dtype=float)
+        median_oos = float(np.median(oos_sharpes))
+        pbo = float(np.mean(oos_sharpes < median_oos))
+        logger.info("CPCV PBO = %.4f (median OOS Sharpe = %.4f)", pbo, median_oos)
+        return pbo
+
+    # ------------------------------------------------------------------ #
+    # Private helpers                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _split_groups(self, data: pd.DataFrame) -> List[pd.DataFrame]:
+        """Split ``data`` into ``n_groups`` sequential equal-length groups."""
+        arrays = np.array_split(np.arange(len(data)), self.n_groups)
+        return [data.iloc[arr] for arr in arrays if len(arr) > 0]
