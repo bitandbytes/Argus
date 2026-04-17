@@ -314,6 +314,12 @@ def _run_cluster_wfo(
         tuning_cfg.get("promotion", {}).get("pbo_threshold", 0.40)
     )
 
+    cpcv_cfg = tuning_cfg.get("cpcv", {}) or {}
+    cpcv_enabled: bool = bool(cpcv_cfg.get("enabled", True))
+    cpcv_n_groups: int = int(cpcv_cfg.get("n_groups", 10))
+    cpcv_n_test_groups: int = int(cpcv_cfg.get("n_test_groups", 2))
+    cpcv_embargo_days: int = int(cpcv_cfg.get("embargo_days", 5))
+
     mdp = MarketDataProvider(cache_dir="data/raw")
     registry = PluginRegistry()
     registry.discover_plugins(_PLUGINS_PATH)
@@ -327,6 +333,10 @@ def _run_cluster_wfo(
         n_trials=n_trials,
         pbo_top_k=min(10, max(2, n_trials // 10)),
         mlflow_tracking=False,  # outer MLflow run handles logging
+        run_cpcv=cpcv_enabled,
+        cpcv_n_groups=cpcv_n_groups,
+        cpcv_n_test_groups=cpcv_n_test_groups,
+        cpcv_embargo_days=cpcv_embargo_days,
     )
 
     all_results: List[Tuple[str, WFOResult]] = []
@@ -376,11 +386,21 @@ def _run_cluster_wfo(
     agg_oos = float(np.mean([r.aggregate_oos_sharpe for _, r in all_results]))
     agg_pbo = float(np.mean([r.pbo for _, r in all_results]))
 
-    pbo_pass = agg_pbo < pbo_threshold
+    # Aggregate CPCV PBO across tickers that successfully produced it.
+    cpcv_values = [r.cpcv_pbo for _, r in all_results if r.cpcv_pbo is not None]
+    agg_cpcv_pbo: Optional[float] = (
+        float(np.mean(cpcv_values)) if cpcv_values else None
+    )
+
+    # Promotion gate: prefer CPCV PBO when available — it is the López de
+    # Prado-recommended measure.  Fall back to the per-window PBO otherwise.
+    gate_pbo = agg_cpcv_pbo if agg_cpcv_pbo is not None else agg_pbo
+    gate_source = "cpcv_pbo" if agg_cpcv_pbo is not None else "pbo"
+    pbo_pass = gate_pbo < pbo_threshold
     if not pbo_pass:
         logger.warning(
-            "Cluster %d: PBO=%.4f exceeds threshold %.2f — parameters may be overfit.",
-            cluster_id, agg_pbo, pbo_threshold,
+            "Cluster %d: %s=%.4f exceeds threshold %.2f — parameters may be overfit.",
+            cluster_id, gate_source, gate_pbo, pbo_threshold,
         )
 
     metadata: Dict[str, Any] = {
@@ -388,7 +408,9 @@ def _run_cluster_wfo(
         "representative_ticker": best_ticker,
         "aggregate_oos_sharpe": round(agg_oos, 4),
         "pbo": round(agg_pbo, 4),
+        "cpcv_pbo": round(agg_cpcv_pbo, 4) if agg_cpcv_pbo is not None else None,
         "pbo_pass": pbo_pass,
+        "pbo_source": gate_source,
         "is_stable": best_result.is_stable,
         "n_windows": best_result.n_windows,
         "in_sample_days": in_sample_days,
@@ -405,15 +427,17 @@ def _run_cluster_wfo(
 
     if mlflow_tracking:
         try:
-            mlflow.log_metrics(
-                {
-                    f"cluster_{cluster_id}/oos_sharpe": agg_oos,
-                    f"cluster_{cluster_id}/pbo": agg_pbo,
-                    f"cluster_{cluster_id}/is_stable": float(best_result.is_stable),
-                    f"cluster_{cluster_id}/n_tickers": float(len(all_results)),
-                }
-            )
+            metrics = {
+                f"cluster_{cluster_id}/oos_sharpe": agg_oos,
+                f"cluster_{cluster_id}/pbo": agg_pbo,
+                f"cluster_{cluster_id}/is_stable": float(best_result.is_stable),
+                f"cluster_{cluster_id}/n_tickers": float(len(all_results)),
+            }
+            if agg_cpcv_pbo is not None:
+                metrics[f"cluster_{cluster_id}/cpcv_pbo"] = agg_cpcv_pbo
+            mlflow.log_metrics(metrics)
             mlflow.log_param(f"cluster_{cluster_id}/best_ticker", best_ticker)
+            mlflow.log_param(f"cluster_{cluster_id}/pbo_source", gate_source)
         except Exception as exc:
             logger.debug("MLflow cluster logging failed: %s", exc)
 
