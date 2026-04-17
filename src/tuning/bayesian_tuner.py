@@ -249,6 +249,28 @@ class BayesianTuner:
         return result
 
     @staticmethod
+    def unpack_params_static(flat_params: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        """Static version of :meth:`unpack_params` — no instance required.
+
+        Converts flat namespaced params ``{plugin__param: value}`` to a nested
+        dict ``{plugin_name: {param_name: value}}``.
+
+        Args:
+            flat_params: Flat dict as produced by Optuna or ``BayesianTuner.tune()``.
+
+        Returns:
+            Nested dict ``{plugin_name: {param_name: value}}``.
+        """
+        result: Dict[str, Dict[str, Any]] = {}
+        for key, value in flat_params.items():
+            if "__" in key:
+                plugin_name, param_name = key.split("__", 1)
+            else:
+                plugin_name, param_name = "unknown", key
+            result.setdefault(plugin_name, {})[param_name] = value
+        return result
+
+    @staticmethod
     def stability_check(
         param_histories: List[Dict[str, Any]],
         threshold: float = 0.20,
