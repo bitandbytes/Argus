@@ -257,13 +257,107 @@ Development task list organized by phase. Check off tasks as they are completed.
 
 ---
 
-## Phase 3 — LLM Integration & Production (Weeks 13–18)
+## Phase 3 — Signal-Pillar Completion (Weeks 13–18)
 
-**Goal:** LLM validation gate, risk management, paper trading, monitoring.
+**Goal:** Close the three gaps between the stated product goal (technicals + financials + news) and the current Phase-2 implementation: activate real news data for FinBERT, add fundamentals as a first-class signal pillar with per-stock tunable weight and ETF-aware zeroing, add event-driven exits, and refactor the feature assembler off its hardcoded column list.
 
-### 3.1 Paper Trading Setup (Free via Alpaca)
+**Why this becomes Phase 3 (review output, April 2026):** the v1.1 architecture lists fundamentals as an ingested data source but never feeds them into the `QuantEngine` composite. News is stubbed to zero (ADR-0010). Exit logic is confidence-only. `FeatureAssembler` hardcodes `FEATURE_COLUMNS`, blocking dynamic enrichment. See ADR-0011, ADR-0012, ADR-0013.
 
-> **Note:** Alpaca offers free unlimited paper trading via their API. No paid service needed. Phase 3.1 keeps paper trading in Phase 3 because the free service is available.
+### 3.1 News Data Provider (Real Implementation)
+
+Supersedes the Phase-1 stub in `src/data/news_data.py` and unblocks the already-built `FinBERTEnricher` (Phase 1.5).
+
+- [ ] Implement `NewsDataProvider.get_headlines(ticker, start, end)` with Alpha Vantage `NEWS_SENTIMENT`
+- [ ] Finnhub `/company-news` fallback on rate-limit or empty-result errors
+- [ ] `(ticker, date)`-keyed on-disk cache under `data/raw/news/` with 12-hour TTL
+- [ ] `get_macro_news()` equivalent via FRED + Alpha Vantage economic news (optional; stub acceptable if out of scope)
+- [ ] Unit tests with recorded fixture responses for both providers (success + rate-limit error paths)
+- [ ] Integration smoke test: call `FinBERTEnricher.enrich("AAPL", …)` end-to-end; assert non-zero sentiment features for a day with known news
+- [ ] Update ADR-0010 status to "Superseded by ADR-0013" once merged
+- [ ] Reference: ADR-0013
+
+### 3.2 Fundamentals Data & Indicators (NEW SIGNAL PILLAR)
+
+Adds fundamentals as a first-class signal pillar with per-stock / per-cluster tunable weight and hard ETF exclusion. See ADR-0011.
+
+- [ ] Implement `FundamentalsDataProvider` in `src/data/fundamentals_data.py` (Alpha Vantage `OVERVIEW`, `INCOME_STATEMENT`, `CASH_FLOW`, `EARNINGS`; yfinance fallback)
+- [ ] Cache raw statements in `data/features/fundamentals/{ticker}/{fiscal_period}.parquet`
+- [ ] Monthly refresh + on-demand refresh within 7 days of a scheduled earnings date
+- [ ] ETF short-circuit: return empty DataFrame for any ticker in `config/watchlist.yaml::etfs:` (no API call)
+- [ ] Add `FundamentalIndicatorPlugin` abstract base to `src/plugins/base.py`
+  - Contract: `compute(fundamentals_df, price_df) -> pd.Series`, `normalize(values) -> pd.Series`
+  - Attribute `applies_to_etfs: bool = False`
+- [ ] Register `FundamentalIndicatorPlugin` type in `src/plugins/registry.py`
+- [ ] Implement initial fundamentals plugins under `src/plugins/fundamentals/`:
+  - [ ] `pe_zscore.py` — trailing P/E vs sector 5-year z-score
+  - [ ] `fcf_yield.py` — free cash flow / market cap
+  - [ ] `earnings_growth.py` — YoY EPS growth from last 4 quarters
+  - [ ] `earnings_surprise.py` — most recent actual EPS vs consensus estimate
+- [ ] Wire `fundamental_score` aggregation channel into `QuantEngine._weighted_composite` (mean of enabled plugins' normalised outputs)
+- [ ] Apply applicability multiplier `f_fund`:
+  - [ ] ETFs force `f_fund = 0` (detect from `watchlist.yaml::etfs:`)
+  - [ ] Optional per-stock `fundamentals_weight_override` in `watchlist.yaml`
+  - [ ] Re-normalise remaining regime weights to sum to 1.0 when `f_fund = 0`
+- [ ] Add `fundamentals_weight` per regime to `config/cluster_params/cluster_default.yaml` (TRENDING_UP: 0.15, TRENDING_DOWN: 0.10, RANGING: 0.20, VOLATILE: 0.05)
+- [ ] Expose `fundamentals_weight` as a `ParamSpec` in `get_tunable_params()` so `BayesianTuner` can search it (`[0.0, 0.30]`)
+- [ ] Unit tests: `FundamentalIndicatorPlugin` contract, ETF zero-weight path, re-normalisation math
+- [ ] Reference: ADR-0011
+
+### 3.3 Event-Driven Exits
+
+Adds discrete event-based exits alongside the existing confidence-based exit. See ADR-0012. The `RiskManager` that consumes these filters is scheduled in Phase 4.3, but the filters themselves land here and are unit-testable in isolation.
+
+- [ ] Replace Phase-1 stub `MarketDataProvider.get_earnings_calendar()` with real Alpha Vantage `EARNINGS_CALENDAR` client
+- [ ] Cache earnings calendar in `data/features/events/earnings_calendar.parquet` with 24-hour TTL
+- [ ] Add `EventFilter` abstract base to `src/plugins/base.py`
+  - Contract: `should_exit(position, bar, context) -> (bool, Optional[str])`
+- [ ] Register `EventFilter` type in `src/plugins/registry.py`
+- [ ] Implement filters in `src/risk/event_filter.py`:
+  - [ ] `EarningsBlackoutFilter` (default window: T-2 to T+1)
+  - [ ] `NewsShockFilter` (default: `|sentiment| > 0.75` AND `news_volume_ratio > 3`)
+  - [ ] `AtrStopFilter` (default: `2.0 × ATR_14` stop, `4.0 × ATR_14` take-profit)
+- [ ] Add `exit_reason: Optional[str]` field to `TradeSignal` (`src/models/trade_signal.py`)
+- [ ] Add `exits:` block to `config/settings.yaml` with per-filter thresholds + `enabled: bool` toggles
+- [ ] Unit tests for each filter against synthetic earnings / news-shock / price-gap inputs
+- [ ] Reference: ADR-0012
+
+### 3.4 Dynamic Feature Schema
+
+`src/signals/feature_assembler.py` currently hardcodes `FEATURE_COLUMNS` (~13 columns). Adding fundamentals or richer sentiment will silently drop features. Refactor to a schema registry built from active plugins.
+
+- [ ] Remove hardcoded `FEATURE_COLUMNS` constant
+- [ ] Build schema at runtime from active `IndicatorPlugin`, `DataEnricher`, and `FundamentalIndicatorPlugin` instances (each contributes its `output_column`s)
+- [ ] Persist the training-time schema alongside each model artifact (`data/models/meta_model/v*_*.pkl.schema.json`)
+- [ ] At inference time, assert assembled-feature schema matches training-time schema; raise with a clear error on mismatch
+- [ ] Contract test: registering a new plugin propagates to assembled features without code changes to `FeatureAssembler`
+
+### 3.5 Provider Choice ADR
+
+- [ ] Publish ADR-0013 (already drafted — ensure index is updated)
+- [ ] Document Alpha Vantage free-tier rate-limit strategy and fallback logic
+- [ ] Add `ALPHA_VANTAGE_API_KEY` and `FINNHUB_API_KEY` to `.env.example`
+
+### 3.6 Phase 3 Validation Checkpoint
+
+- [ ] Feature matrix for a single sample stock (e.g., AAPL) shows **non-zero** technical, sentiment, AND fundamental columns on a recent bar
+- [ ] Feature matrix for an ETF (e.g., `ITA`) shows `fundamental_score == 0.0` on every bar, regardless of fundamentals-provider behaviour
+- [ ] Manual override test: setting `fundamentals_weight_override: 0.0` on a stock in `watchlist.yaml` reproduces the ETF behaviour
+- [ ] Backtest A/B regression: `scripts/run_backtest.py` on AAPL 2020–2024 with fundamentals off vs on — fundamentals-on must not degrade Sharpe by more than 10% (overfitting guard)
+- [ ] Event-filter ablation: disabling `EarningsBlackoutFilter` increases max drawdown on AAPL earnings dates
+- [ ] All Phase 3 unit and integration tests pass
+- [ ] ADRs 0011, 0012, 0013 reviewed and moved from Proposed to Accepted
+
+---
+
+## Phase 4 — LLM Integration & Production (Weeks 19–24)
+
+**Goal:** LLM validation gate, risk management (consuming Phase-3 event filters), paper trading, monitoring.
+
+> **Note (April 2026 renumber):** This phase was previously Phase 3. Its scope is unchanged; it is renumbered to make room for the Phase 3 signal-pillar completion work above. The `RiskManager` in 4.3 now integrates the `EventFilter` instances built in Phase 3.3.
+
+### 4.1 Paper Trading Setup (Free via Alpaca)
+
+> **Note:** Alpaca offers free unlimited paper trading via their API. No paid service needed.
 
 - [ ] Create Alpaca account at alpaca.markets and get paper trading API keys
 - [ ] Add Alpaca keys to `.env`
@@ -272,7 +366,7 @@ Development task list organized by phase. Check off tasks as they are completed.
 - [ ] Implement order types: market, limit, stop-loss, take-profit
 - [ ] Add rate limiting to respect Alpaca API limits
 
-### 3.2 LLM Validator (OpenAI)
+### 4.2 LLM Validator (OpenAI)
 
 - [ ] Implement `LLMValidator` class as a `SignalFilter` plugin
 - [ ] Use OpenAI GPT-4o-mini with structured JSON output
@@ -282,59 +376,63 @@ Development task list organized by phase. Check off tasks as they are completed.
 - [ ] Track API costs in MLflow (tokens used per call)
 - [ ] Write tests with mocked OpenAI responses
 
-### 3.3 Risk Manager
+### 4.3 Risk Manager
 
 - [ ] Implement `RiskManager` class with position sizing logic
 - [ ] ATR-based base size with confidence and Kelly-fraction scaling
 - [ ] Regime adjustment (volatile = smaller size)
-- [ ] Stop-loss placement using ATR multiplier
-- [ ] Take-profit using ATR multiplier
+- [ ] Populate `TradeSignal.stop_loss_pct` and `take_profit_pct` using ATR multipliers
+- [ ] `evaluate_exits(open_positions, bar)` — iterate Phase-3.3 `EventFilter` instances + confidence exit; set `TradeSignal.exit_reason` to the first triggered rule
 - [ ] Portfolio-level checks: max position %, max sector exposure, kill switches
 - [ ] Daily/total drawdown monitoring with kill switch activation
 
-### 3.4 Pipeline Orchestrator
+### 4.4 Pipeline Orchestrator
 
-- [ ] Implement `TradingPipeline` class wiring all components
+- [ ] Implement `TradingPipeline` class in `src/pipeline.py` wiring all components (Regime → FeatureAssembler → QuantEngine → MetaLabelModel → LLMValidator → RiskManager)
 - [ ] `run_daily()` method: ingest → features → signals → validate → execute
+- [ ] `scripts/run_daily.py` thin CLI wrapper around `TradingPipeline.run_daily`
 - [ ] Error handling and retry logic for API failures
 - [ ] Idempotency: re-running on the same day should not produce duplicate trades
 - [ ] Logging: structured logs to `data/results/logs/`
 
-### 3.5 Telegram Alerts
+### 4.5 Telegram Alerts
 
 - [ ] Create Telegram bot via BotFather, get bot token
 - [ ] Implement `AlertService` using `python-telegram-bot`
-- [ ] Send alerts on: trade entry, trade exit, LLM veto, drawdown breach, daily summary
+- [ ] Send alerts on: trade entry, trade exit (include `exit_reason`), LLM veto, drawdown breach, daily summary
 - [ ] Format messages with markdown for readability
 - [ ] Test alert delivery before going live
 
-### 3.6 Monitoring Dashboard
+### 4.6 Monitoring Dashboard
 
 - [ ] Set up local Grafana (Docker) or use simple Streamlit dashboard
-- [ ] Track key metrics: open positions, daily P&L, cumulative return, drawdown
+- [ ] Track key metrics: open positions, daily P&L, cumulative return, drawdown, exit-reason distribution
 - [ ] Visualize: regime distribution, signal generation rate, LLM veto rate
 - [ ] Pull data from MLflow + local SQLite/Parquet logs
 
-### 3.7 Scheduling
+### 4.7 Scheduling
 
 - [ ] Set up `cron` (Linux/Mac) or Task Scheduler (Windows) to run pipeline daily pre-market
 - [ ] Alternative: use `APScheduler` or `Prefect` for in-process scheduling
 - [ ] Verify timezone handling (US market hours regardless of local timezone)
 
-### 3.8 Phase 3 Validation Checkpoint
+### 4.8 Phase 4 Validation Checkpoint
 
 - [ ] Paper trading runs daily for at least 5 consecutive days without errors
 - [ ] LLM veto rate is in expected range (10-30% of signals)
 - [ ] All alerts deliver successfully
 - [ ] Risk limits enforced (no trades exceed max position %)
 - [ ] Drawdown kill switch tested manually
+- [ ] Event-exit attribution in trade log matches expected causes (earnings / news / ATR)
 - [ ] Begin formal 3-month paper trading validation period
 
 ---
 
-## Phase 4 — Future Enhancements (Post-Production)
+## Phase 5 — Future Enhancements (Post-Production)
 
-These are pluggable enhancements documented in `docs/architecture.md` Section 14. Implement as separate plugins per the priority order in the dependency map. Do not start until Phase 3 has been running successfully for at least 3 months.
+> **Note (April 2026 renumber):** This was previously Phase 4. Renumbered only; contents and priority order are unchanged.
+
+These are pluggable enhancements documented in `docs/architecture.md` Section 14. Implement as separate plugins per the priority order in the dependency map. Do not start until Phase 4 has been running successfully for at least 3 months.
 
 - [ ] Kalman filter smoothing plugin (P0 — highest impact)
 - [ ] Cross-asset correlation enricher (P1)
