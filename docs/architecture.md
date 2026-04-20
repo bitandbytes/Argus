@@ -1,9 +1,11 @@
 # Multi-Model Position Trading Pipeline — Architecture Document
 
-**Version:** 1.1  
+**Version:** 1.2  
 **Date:** April 2026  
 **Status:** Design Phase  
-**Changelog:** v1.1 — Replaced pure clustering with hybrid approach (cluster baseline + individual promotion). Corrected yfinance data availability (daily bars support `period="max"`, 20+ years). Added PromotionGate class and demotion rules.
+**Changelog:**
+- v1.2 — Added fundamentals as a first-class signal pillar alongside technicals and sentiment (§3.1, §3.2, §4.3, §13.1). Introduced `FundamentalIndicatorPlugin` abstraction with per-stock / per-cluster tunable weight and hard ETF exclusion. Added event-driven exit layer (§4.6) with `EventFilter` abstraction (earnings blackout, news shock, ATR hard stop). Added `fundamentals:`, `news:`, `exits:`, `risk_filters:` blocks to §10 configuration schema. See ADR-0011, ADR-0012, ADR-0013.
+- v1.1 — Replaced pure clustering with hybrid approach (cluster baseline + individual promotion). Corrected yfinance data availability (daily bars support `period="max"`, 20+ years). Added PromotionGate class and demotion rules.
 
 ---
 
@@ -170,6 +172,27 @@ OM --> AS
 
 **Note on yfinance for production:** yfinance is an unofficial scraper — it works well for research and prototyping but carries risk of rate-limiting, IP blocking, and breakage from Yahoo site changes. For live trading with real capital, migrate to a paid provider (Polygon.io, Alpaca, Finnhub, or FMP) that offers SLA guarantees and dedicated support.
 
+#### 3.1.1 Fundamentals & Corporate Events (First-Class Signal Source)
+
+Fundamentals are a **third signal pillar** alongside technicals and news sentiment. They are not merely an ingested dataset — they feed a dedicated `fundamental_score` channel in the Quant Engine composite (§4.3). The design recognises two realities:
+
+1. **Per-stock relevance varies.** Some equities trade predominantly on technicals / momentum / narrative with a weak fundamental anchor; others are strongly fundamentally anchored. A per-stock / per-cluster tunable weight `fundamentals_weight` (Optuna search space `[0.0, 0.30]`) captures this.
+2. **ETFs have no issuer-level fundamentals.** Every ticker classified as an ETF in `config/watchlist.yaml::etfs:` forces `fundamentals_weight = 0.0` at runtime, regardless of cluster defaults or tuned overrides. The `FundamentalsDataProvider` returns an empty DataFrame for these tickers; the Quant Engine zero-weights the channel and re-normalises the remaining weights so the composite is unaffected.
+
+| Source | Endpoint / Dataset | Refresh Cadence | Notes |
+|--------|--------------------|-----------------|-------|
+| Alpha Vantage | `OVERVIEW`, `INCOME_STATEMENT`, `CASH_FLOW`, `BALANCE_SHEET`, `EARNINGS` | Monthly + on-demand around earnings dates | Free-tier throughput: 25 req/day, 5 req/min. Cache aggressively. |
+| Alpha Vantage | `EARNINGS_CALENDAR` | Daily | Drives the earnings-blackout event filter (§4.6). |
+| yfinance | `Ticker.info`, `Ticker.financials`, `Ticker.cashflow` | Fallback when Alpha Vantage rate-limits | Unofficial; only a fallback. |
+
+Fundamental features computed from the raw data (forward-filled between quarters):
+- `pe_zscore` — trailing P/E vs. 5-year sector z-score.
+- `fcf_yield` — free cash flow / market cap.
+- `earnings_growth` — YoY EPS growth (last 4 quarters).
+- `earnings_surprise` — actual EPS vs. consensus estimate (most recent quarter).
+
+Each of these is emitted by a `FundamentalIndicatorPlugin` (§13.1) and normalised to `[-1, +1]` before aggregation.
+
 ### 3.2 Feature Store Schema
 
 ```python
@@ -207,11 +230,31 @@ columns = {
     
     # Regime label (from HMM)
     "regime",  # {0: trending_up, 1: trending_down, 2: ranging, 3: volatile}
-    
+
+    # Fundamentals (from FundamentalIndicatorPlugins; forward-filled between quarters)
+    "fund_pe_zscore",       # trailing P/E vs sector, z-score
+    "fund_fcf_yield",       # free cash flow / market cap
+    "fund_earnings_growth", # YoY EPS growth
+    "fund_earnings_surprise", # most recent actual vs consensus
+    "fundamental_score",    # aggregated signed score, [-1, +1]; 0.0 for ETFs
+
     # Meta
     "timestamp",
 }
 ```
+
+**Additional feature-store partitions:**
+
+```
+features/
+├── {ticker}/daily.parquet        # per-bar feature matrix (above)
+├── fundamentals/
+│   └── {ticker}/{fiscal_period}.parquet   # raw quarterly statements
+└── events/
+    └── earnings_calendar.parquet  # upcoming + historical earnings dates
+```
+
+For ETF tickers, the `fundamentals/` partition is empty and the five `fund_*` columns in `{ticker}/daily.parquet` are written as `NaN`; `fundamental_score` is `0.0`. Downstream layers (Quant Engine, Meta-Model) treat `fundamental_score == 0.0` as "no fundamental contribution" rather than "neutral".
 
 ---
 
@@ -331,13 +374,15 @@ IN -> IN : normalize MACD\n→ [-1, +1]
 IN -> IN : normalize Bollinger\n→ [-1, +1]
 IN -> IN : normalize Volume\n→ [-1, +1]
 IN -> IN : normalize Sentiment\n→ [-1, +1]
+IN -> IN : aggregate Fundamentals\n(pe_zscore, fcf_yield,\nearnings_growth, surprise)\n→ fundamental_score ∈ [-1, +1]
 
 IN -> CS : Dict[indicator, score]
 deactivate IN
 
 activate CS
 CS -> CS : load regime-specific\nweights for this stock
-CS -> CS : composite = Σ(weight_i × score_i)
+CS -> CS : apply fundamentals\napplicability factor\nf_fund ∈ [0, 1]\n(0 for ETFs)
+CS -> CS : composite = Σ(weight_i × score_i)\n(weights re-normalised\nif f_fund = 0)
 CS -> CS : confidence = |composite|
 CS -> MTC : raw_signal, confidence
 deactivate CS
@@ -366,7 +411,20 @@ deactivate MTC
 | `donchian_period` | [20, 55] | Donchian channel lookback |
 | `atr_multiplier` | [1.5, 3.0] | Stop-loss distance (× ATR) |
 | `sentiment_weight` | [0.0, 0.20] | FinBERT score weight in composite |
+| `fundamentals_weight` | [0.0, 0.30] | Fundamental score weight in composite (per regime; forced to 0 for ETFs) |
 | `weekly_confirm_boost` | [1.0, 1.3] | Multi-timeframe confidence boost |
+
+**Fundamentals applicability factor (`f_fund`):**
+
+The fundamentals channel is modulated by a per-ticker multiplier `f_fund ∈ [0, 1]`:
+
+- **ETFs** (tickers listed under `config/watchlist.yaml::etfs:`): `f_fund = 0` unconditionally. The channel is skipped and the remaining weights are re-normalised to sum to 1.0.
+- **Stocks without a manual override**: `f_fund = 1` (the tuned `fundamentals_weight` applies as-is).
+- **Stocks with a manual override** (`config/watchlist.yaml::stocks[*].fundamentals_weight_override`): the override replaces the tuned per-regime weight for that ticker. Setting the override to `0.0` achieves the same effect as an ETF (useful for momentum-driven names with weak fundamental anchoring).
+
+This separation lets the Bayesian tuner search the fundamentals weight for fundamentally-relevant stocks while guaranteeing ETFs and explicitly opted-out stocks never consume a fundamentals weight.
+
+**Example: ETF weight re-normalisation.** For a stock with regime weights `{ma: 0.25, rsi: 0.20, macd: 0.20, bollinger: 0.15, volume: 0.10, sentiment: 0.10, fundamentals: 0.15}` where `f_fund = 0`, the effective weights become `{ma: 0.294, rsi: 0.235, macd: 0.235, bollinger: 0.176, volume: 0.118, sentiment: 0.118, fundamentals: 0.0}` (each non-fundamental weight multiplied by `1 / (1 − 0.15) ≈ 1.176`).
 
 ### 4.4 ML Meta-Labeling Model (Layer 3 — Precision Filter)
 
@@ -490,6 +548,27 @@ deactivate VD
 - Use GPT-4o-mini (~$0.15/1M input tokens) rather than GPT-4o
 - Cache LLM responses per ticker per day (same signal = same context)
 - Estimated daily cost for 100-stock watchlist: $0.10–$0.50
+
+### 4.6 Event-Driven Exit Layer
+
+**Purpose:** Confidence-based exits (`confidence < exit_threshold`) react to slow deterioration in the composite signal. They do **not** react to discrete events that can invalidate a thesis within hours — upcoming earnings, news shocks, or hard price moves through a stop level. Phase 3 introduces a dedicated event-driven exit layer that runs in parallel with the confidence exit. A position is closed whenever **any** of the following triggers fires:
+
+| Filter | Trigger | Rationale |
+|--------|---------|-----------|
+| `EarningsBlackoutFilter` | Open position with an earnings announcement within `earnings_blackout_days` (default: T-2 to T+1). | Earnings gaps are bimodal and not predicted by technicals or fundamentals. Exit before the print, re-enter after the dust settles. |
+| `NewsShockFilter` | Same-bar FinBERT score `abs(sentiment_score) > news_shock_threshold` (default 0.75) **and** news volume ratio > 3×. | Discrete news shocks (downgrades, fraud, guidance cuts) break technical setups within hours. |
+| `AtrStopFilter` | Price crosses the ATR-multiple stop level computed at entry (default `2.0 × ATR_14`) or the take-profit level (default `4.0 × ATR_14`). | Hard risk control independent of confidence score. |
+
+**Integration with the Risk Manager (Phase 4):** each `EventFilter` implements the abstract contract in §13.1 and is consulted by `RiskManager.evaluate_exits(open_positions)` on every bar. The exit decision is:
+
+```
+exit = confidence_exit OR earnings_exit OR news_shock_exit OR atr_stop_exit
+exit_reason = first matching reason (for logging / alerts)
+```
+
+`TradeSignal.exit_reason: Optional[str]` captures which filter fired so the MLflow trade log attributes drawdowns and wins to the correct exit mechanism.
+
+**Configuration block** (§10): a new top-level `exits:` section with per-filter thresholds and an `enabled: bool` toggle per filter so ablation studies can isolate each one.
 
 ---
 
@@ -1266,8 +1345,36 @@ pipeline:
 data:
   market_provider: "yfinance"  # yfinance | polygon | alpaca
   news_provider: "alphavantage"
+  fundamentals_provider: "alphavantage"  # alphavantage | yfinance
   cache_dir: "data/raw"
   feature_dir: "data/features"
+
+news:
+  alphavantage:
+    api_key_env: "ALPHA_VANTAGE_API_KEY"
+    endpoint: "NEWS_SENTIMENT"
+    lookback_days: 30
+    cache_ttl_hours: 12
+  finnhub:
+    api_key_env: "FINNHUB_API_KEY"
+    used_as: "fallback"
+
+fundamentals:
+  alphavantage:
+    api_key_env: "ALPHA_VANTAGE_API_KEY"
+    endpoints: ["OVERVIEW", "INCOME_STATEMENT", "CASH_FLOW", "EARNINGS"]
+    refresh_frequency: "monthly"
+    cache_ttl_days: 30
+  yfinance:
+    used_as: "fallback"
+  # Per-regime default weight (tunable per cluster via Optuna)
+  default_weights_by_regime:
+    TRENDING_UP: 0.15
+    TRENDING_DOWN: 0.10
+    RANGING: 0.20
+    VOLATILE: 0.05
+  # ETFs: f_fund forced to 0 regardless of the weights above
+  etf_weight_override: 0.0
 
 sentiment:
   finbert:
@@ -1351,6 +1458,23 @@ risk:
     TRENDING_DOWN: 0.8
     RANGING: 0.8
     VOLATILE: 0.5
+
+exits:
+  # Confidence-based exit (existing)
+  confidence_threshold: 0.20
+  # Event-driven exit filters (§4.6); each is independently togglable
+  earnings_blackout:
+    enabled: true
+    days_before: 2
+    days_after: 1
+  news_shock:
+    enabled: true
+    sentiment_threshold: 0.75       # abs(FinBERT score) to trigger
+    volume_ratio_threshold: 3.0     # news volume vs 20-day avg
+  atr_stop:
+    enabled: true
+    stop_multiplier: 2.0            # distance from entry, in ATR units
+    tp_multiplier: 4.0
 
 broker:
   provider: "alpaca"
@@ -1449,6 +1573,23 @@ package "Plugin Interfaces (Abstract Base Classes)" {
         +{abstract} batch_enrich(tickers: List[str]) : Dict[str, Dict]
     }
 
+    abstract class FundamentalIndicatorPlugin {
+        +name: str
+        +category: str  // "valuation" | "growth" | "quality" | "surprise"
+        +version: str
+        +{abstract} compute(fundamentals_df: pd.DataFrame, price_df: pd.DataFrame) : pd.Series
+        +{abstract} normalize(values: pd.Series) : pd.Series
+        +{abstract} get_tunable_params() : Dict[str, ParamSpec]
+        +applies_to_etfs: bool = false
+    }
+
+    abstract class EventFilter {
+        +name: str
+        +stage: str  // "risk_exit"
+        +{abstract} should_exit(position: OpenPosition, bar: Bar, context: Dict) : Tuple[bool, Optional[str]]
+        +{abstract} get_tunable_params() : Dict[str, ParamSpec]
+    }
+
     class SmoothResult {
         +smoothed: pd.Series
         +trend: pd.Series
@@ -1473,11 +1614,15 @@ package "Plugin Registry" {
         -_filters: Dict[str, SignalFilter]
         -_smoothers: Dict[str, SmoothingPlugin]
         -_enrichers: Dict[str, DataEnricher]
+        -_fundamentals: Dict[str, FundamentalIndicatorPlugin]
+        -_event_filters: Dict[str, EventFilter]
         +register(plugin: Any) : void
         +get_indicator(name: str) : IndicatorPlugin
         +get_filter(name: str) : SignalFilter
         +get_smoother(name: str) : SmoothingPlugin
         +get_enricher(name: str) : DataEnricher
+        +get_fundamental(name: str) : FundamentalIndicatorPlugin
+        +get_event_filter(name: str) : EventFilter
         +discover_plugins(path: str) : void
         +list_available() : Dict[str, List[str]]
     }
@@ -1496,7 +1641,18 @@ package "Built-in Plugins (Phase 1)" {
     class FinBERTEnricher extends DataEnricher
 }
 
-package "Phase 2 Plugins (Future)" #lightyellow {
+package "Phase 3 Plugins (Signal-Pillar Completion)" #lightblue {
+    class PEZScoreIndicator extends FundamentalIndicatorPlugin
+    class FCFYieldIndicator extends FundamentalIndicatorPlugin
+    class EarningsGrowthIndicator extends FundamentalIndicatorPlugin
+    class EarningsSurpriseIndicator extends FundamentalIndicatorPlugin
+    class LLMValidator extends SignalFilter
+    class EarningsBlackoutFilter extends EventFilter
+    class NewsShockFilter extends EventFilter
+    class AtrStopFilter extends EventFilter
+}
+
+package "Phase 5 Plugins (Future Enhancements)" #lightyellow {
     class KalmanSmoother extends SmoothingPlugin
     class FracDiffTransformer extends IndicatorPlugin
     class AttentionWeighter extends SignalFilter
@@ -1508,6 +1664,8 @@ PluginRegistry --> IndicatorPlugin
 PluginRegistry --> SignalFilter
 PluginRegistry --> SmoothingPlugin
 PluginRegistry --> DataEnricher
+PluginRegistry --> FundamentalIndicatorPlugin
+PluginRegistry --> EventFilter
 
 @enduml
 ```

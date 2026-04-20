@@ -36,6 +36,9 @@ What becomes easier? What becomes harder? What are the trade-offs?
 | [0008](0008-data-provider-yfinance.md) | Data provider: yfinance for prototype | Accepted |
 | [0009](0009-phase1-hmm-viterbi-batch.md) | Phase 1 regime detector uses batch Viterbi in `detect_series()` | Accepted |
 | [0010](0010-phase1-sentiment-stub.md) | Phase 1 sentiment features stubbed to zero | Accepted |
+| [0011](0011-fundamentals-as-signal-pillar.md) | Fundamentals as a first-class signal pillar | Proposed |
+| [0012](0012-event-driven-exit-layer.md) | Event-driven exit layer alongside confidence-based exits | Proposed |
+| [0013](0013-alpha-vantage-fundamentals-and-news-provider.md) | Alpha Vantage as fundamentals + news provider (Finnhub fallback) | Proposed |
 
 ## Adding a New ADR
 
