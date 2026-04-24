@@ -67,11 +67,17 @@ trading-pipeline/
 │   └── decisions/               # ADRs (architecture decision records)
 ├── .claude/
 │   └── skills/                  # Custom skills for Claude Code
-│       ├── plugin-author/       # How to write new plugins
+│       ├── plugin-author/       # How to write new plugins (4 core types)
 │       ├── backtest-runner/     # How to run backtests
 │       ├── quant-engine-dev/    # Quant engine development
 │       ├── ml-meta-labeler/     # Meta-labeling workflow
-│       └── finbert-integration/ # FinBERT setup and use
+│       ├── finbert-integration/ # FinBERT inference and features
+│       ├── news-data-provider/  # Alpha Vantage + Finnhub news client (Phase 3.1)
+│       ├── fundamentals-plugin/ # FundamentalIndicatorPlugin + FundamentalsDataProvider (Phase 3.2)
+│       ├── event-filter/        # EventFilter plugins for exit logic (Phase 3.3)
+│       ├── llm-validator/       # OpenAI GPT-4o-mini signal gate (Phase 4.2)
+│       ├── risk-manager/        # RiskManager: sizing, limits, kill switches (Phase 4.3)
+│       └── order-management/    # OrderManager + TradingPipeline orchestrator (Phase 4.1/4.4)
 ├── src/
 │   ├── pipeline.py              # Main orchestrator
 │   ├── plugins/
@@ -106,9 +112,10 @@ trading-pipeline/
 - **Docstrings** in Google style for all public methods.
 
 ### Plugin development
-- Every indicator, smoother, enricher, and filter must implement one of the abstract base classes in `src/plugins/base.py`.
+- Every indicator, smoother, enricher, filter, fundamental indicator, and event filter must implement one of the abstract base classes in `src/plugins/base.py`.
 - Plugins are discovered via `config/plugins.yaml` — never hardcode plugin imports in core pipeline code.
-- See the **plugin-author** skill in `.claude/skills/plugin-author/SKILL.md` for the full plugin contract and examples.
+- See the **plugin-author** skill for the four core plugin types (IndicatorPlugin, SmoothingPlugin, DataEnricher, SignalFilter).
+- For the two Phase 3 types, use **fundamentals-plugin** (FundamentalIndicatorPlugin) or **event-filter** (EventFilter).
 
 ### Anti-lookahead bias (CRITICAL)
 - All features must use `.shift(1)` when feeding into ML models to ensure they only see past data.
@@ -131,13 +138,19 @@ trading-pipeline/
 
 When working on specific tasks, refer to these skills (located in `.claude/skills/`):
 
-| Skill | When to use |
-|-------|-------------|
-| **plugin-author** | Creating any new plugin (indicator, smoother, enricher, filter) |
-| **quant-engine-dev** | Modifying composite signal logic, regime weights, or signal generation |
-| **ml-meta-labeler** | Working with triple-barrier labeling, training/calibrating XGBoost meta-model |
-| **finbert-integration** | Setting up or using FinBERT for sentiment scoring |
-| **backtest-runner** | Running backtests with PyBroker or VectorBT, walk-forward optimization |
+| Skill | Phase | When to use |
+|-------|-------|-------------|
+| **plugin-author** | 1–5 | Creating any plugin using the 4 core types (IndicatorPlugin, SmoothingPlugin, DataEnricher, SignalFilter) |
+| **quant-engine-dev** | 1–5 | Modifying composite signal logic, regime weights, or signal generation |
+| **ml-meta-labeler** | 2 | Working with triple-barrier labeling, training/calibrating XGBoost meta-model |
+| **finbert-integration** | 1–5 | Setting up or using FinBERT for sentiment scoring and rolling features |
+| **backtest-runner** | 1–5 | Running backtests with PyBroker or VectorBT, walk-forward optimization |
+| **news-data-provider** | 3.1 | Implementing the real NewsDataProvider (Alpha Vantage + Finnhub, caching, rate limits) |
+| **fundamentals-plugin** | 3.2 | FundamentalsDataProvider, FundamentalIndicatorPlugin, ETF exclusion, QuantEngine wiring |
+| **event-filter** | 3.3 | EventFilter plugins (earnings blackout, news shock, ATR stop), exit_reason on TradeSignal |
+| **llm-validator** | 4.2 | OpenAI GPT-4o-mini APPROVE/VETO gate, structured JSON, caching, token cost tracking |
+| **risk-manager** | 4.3 | RiskManager: ATR/Kelly sizing, portfolio constraints, drawdown kill switches, exit evaluation |
+| **order-management** | 4.1+4.4 | OrderManager (Alpaca), TradingPipeline orchestrator, run_daily.py, idempotency |
 
 ## Architecture Decisions
 

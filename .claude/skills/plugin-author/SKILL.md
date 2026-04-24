@@ -1,6 +1,6 @@
 ---
 name: plugin-author
-description: "Use this skill when creating any new plugin for the trading pipeline. This includes IndicatorPlugin (technical indicators like RSI, MACD), SmoothingPlugin (Kalman filters, exponential smoothers), DataEnricher (sentiment, cross-asset features, options flow), and SignalFilter (LLM validators, attention reweighting, RL position sizers). Triggers on: 'add a new indicator', 'create a plugin', 'implement a Kalman filter', 'add sentiment from X', 'add a signal filter', or any task that mentions extending the pipeline with a new component. Do NOT use for modifying core pipeline code (use quant-engine-dev instead) or for backtest workflows (use backtest-runner)."
+description: "Use this skill when creating any new plugin for the trading pipeline. This includes IndicatorPlugin (technical indicators like RSI, MACD), SmoothingPlugin (Kalman filters, exponential smoothers), DataEnricher (sentiment, cross-asset features, options flow), and SignalFilter (attention reweighting, RL position sizers). Triggers on: 'add a new indicator', 'create a plugin', 'implement a Kalman filter', 'add sentiment from X', 'add a signal filter', or any task that mentions extending the pipeline with a new component using one of those four types. Do NOT use for: modifying core pipeline code (use quant-engine-dev), backtest workflows (use backtest-runner), fundamentals plugins (use fundamentals-plugin), event-driven exit filters (use event-filter), or the LLM validator (use llm-validator)."
 ---
 
 # Plugin Author Skill
@@ -9,28 +9,35 @@ This skill guides Claude in creating new plugins for the trading pipeline. Every
 
 ## When to Use This Skill
 
-Use this skill whenever the task involves adding or modifying a plugin. Examples:
+Use this skill whenever the task involves adding or modifying one of the four core plugin types. Examples:
 - "Add an Aroon indicator"
 - "Implement a Kalman filter for price smoothing"
 - "Add cross-asset correlation features"
-- "Create an LLM validator using Anthropic's API"
+- "Create an attention-based signal reweighter"
+
+Do NOT use this skill for these specialized plugin types — they have dedicated skills:
+- **`FundamentalIndicatorPlugin`** (P/E z-score, FCF yield, earnings growth) → use `fundamentals-plugin`
+- **`EventFilter`** (earnings blackout, news shock, ATR stop) → use `event-filter`
+- **`LLMValidator`** (OpenAI GPT-4o-mini signal gate) → use `llm-validator`
 
 ## Plugin Types and Their Interfaces
 
-There are exactly four plugin types. Choose the right one based on what the plugin produces:
+The pipeline has **six plugin types** in total. This skill covers the original four; see the dedicated skills above for the other two.
 
-| Plugin Type | What it produces | When to use |
-|-------------|------------------|-------------|
-| `IndicatorPlugin` | A normalized signal in `[-1, +1]` from price/volume data | Technical indicators (RSI, MACD, Bollinger, etc.) |
-| `SmoothingPlugin` | A smoothed series + velocity + noise estimate | Pre-processing raw price data (Kalman, EMA, Holt-Winters) |
-| `DataEnricher` | Additional features added to the FeatureVector | External data (sentiment, options flow, macro indicators) |
-| `SignalFilter` | Modified or filtered TradeSignal | Post-processing (LLM validation, attention reweighting, RL sizing) |
+| Plugin Type | What it produces | When to use | Skill |
+|-------------|------------------|-------------|-------|
+| `IndicatorPlugin` | A normalized signal in `[-1, +1]` from price/volume data | Technical indicators (RSI, MACD, Bollinger, etc.) | **this skill** |
+| `SmoothingPlugin` | A smoothed series + velocity + noise estimate | Pre-processing raw price data (Kalman, EMA, Holt-Winters) | **this skill** |
+| `DataEnricher` | Additional features added to the FeatureVector | External data (sentiment, options flow, macro indicators) | **this skill** |
+| `SignalFilter` | Modified or filtered TradeSignal | Post-processing (attention reweighting, RL sizing) | **this skill** |
+| `FundamentalIndicatorPlugin` | Normalized signal from financial statements | Valuation, quality, growth, earnings surprise metrics | `fundamentals-plugin` |
+| `EventFilter` | Exit decision for open positions | Earnings blackout, news shock, ATR hard stop | `event-filter` |
 
 ## Step-by-Step Plugin Creation
 
 ### Step 1: Choose the plugin type and category
 
-Read `src/plugins/base.py` to see the abstract base class for the plugin type you're implementing. All four ABCs are defined there with full method signatures and docstrings.
+Read `src/plugins/base.py` to see the abstract base class for the plugin type you're implementing. All six ABCs are defined there with full method signatures and docstrings. If you need `FundamentalIndicatorPlugin` or `EventFilter`, switch to their dedicated skills before continuing.
 
 ### Step 2: Create the plugin file
 
@@ -181,6 +188,7 @@ Indicators must NEVER use future data. This means:
 - `SmoothingPlugin.smooth()` must return a `SmoothResult` dataclass with all fields populated.
 - `DataEnricher.enrich()` must return a `Dict[str, float]`.
 - `SignalFilter.filter()` must return a modified `TradeSignal` (or the original unchanged).
+- `FundamentalIndicatorPlugin` and `EventFilter` have different contracts — see their dedicated skills.
 
 ### Rule 3: Parameters via dict
 All tunable parameters are passed via the `params: dict` argument. Never use class attributes for tunable values — they need to be discoverable by the Optuna tuner.
