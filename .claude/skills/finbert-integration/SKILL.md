@@ -1,6 +1,6 @@
 ---
 name: finbert-integration
-description: "Use this skill when setting up, configuring, or working with FinBERT for financial sentiment analysis. Triggers on: 'set up FinBERT', 'sentiment analysis', 'FinBERT batch processing', 'compute sentiment features', 'add news to features', 'FinBERT enricher', or any task involving the local sentiment scoring layer (Layer 1). Do NOT use for the LLM Validator (that's a separate skill area) or for creating other types of plugins (use plugin-author)."
+description: "Use this skill when setting up, configuring, or working with FinBERT for financial sentiment analysis. Triggers on: 'set up FinBERT', 'sentiment analysis', 'FinBERT batch processing', 'compute sentiment features', 'FinBERT enricher', or any task involving the local sentiment scoring layer (Layer 1). Do NOT use for: the LLM Validator (use llm-validator), creating other plugin types (use plugin-author), or building the news API client that feeds headlines into FinBERT (use news-data-provider)."
 ---
 
 # FinBERT Integration Skill
@@ -15,8 +15,9 @@ Use this skill when:
 - Computing rolling sentiment features
 - Debugging slow inference or memory issues
 - Switching between CPU and GPU inference
-- Caching sentiment results
-- Choosing news data sources
+- Caching sentiment results (per-headline SHA256 cache in `data/models/finbert_cache/`)
+
+Do NOT use this skill for building the `NewsDataProvider` that supplies headlines to FinBERT. That client (Alpha Vantage + Finnhub fallback, disk cache, rate limiting) is covered by the **`news-data-provider`** skill.
 
 ## Why FinBERT (Not GPT-4)
 
@@ -236,24 +237,41 @@ class FinBERTEnricher(DataEnricher):
         }
 
     def _load_recent_headlines(self, ticker: str, days_back: int) -> List[Dict]:
-        """Load headlines from the news data store. Implementation depends on data source."""
-        # TODO: Wire up to NewsDataProvider in src/data/news_data.py
-        raise NotImplementedError("Implement based on chosen news provider")
+        """Load headlines from the news data store.
+
+        Phase 1: inject a stub that returns [] — zero sentiment features, intentional.
+        Phase 3: inject a real NewsDataProvider (see news-data-provider skill).
+        """
+        if self.news_provider is None:
+            return []
+        from datetime import date, timedelta
+        end = date.today()
+        start = end - timedelta(days=days_back)
+        headlines = self.news_provider.get_headlines(ticker, start, end)
+        return [{"text": h.text, "timestamp": h.date} for h in headlines if h.text.strip()]
 ```
 
 ## Step 3: News Data Sources
 
-The plugin needs a news source. Options ranked by suitability for Phase 1:
+`FinBERTEnricher` requires a `news_provider` that implements `get_headlines(ticker, start, end) -> list[Headline]`. The full implementation is covered by the **`news-data-provider`** skill (Alpha Vantage `NEWS_SENTIMENT` primary, Finnhub fallback, disk cache).
 
-| Source | Cost | Historical Data | Quality | Notes |
-|--------|------|----------------|---------|-------|
-| **Alpha Vantage NEWS_SENTIMENT** | Free tier (5 calls/min) | ~2 years | Good | Best Phase 1 option — pre-tagged with tickers |
-| **Finnhub** | Free tier (60 calls/min) | ~1 year | Good | Per-ticker news endpoint |
-| **NewsAPI.org** | Free tier (100/day dev only) | ~1 month | Mixed | Not suitable for production |
-| **Polygon.io** | Paid ($30/mo) | Years | Excellent | Use for Phase 3+ |
-| **Web scraping** | Free | Variable | Risky | Maintenance burden, fragile |
+**Phase 1**: inject `None` as `news_provider`. The enricher returns all-zero sentiment features. This is intentional — the quant engine functions without sentiment.
 
-**Recommendation for Phase 1**: Skip historical news for backtesting. Run the FinBERT enricher live from Phase 3 onward, accumulating sentiment history forward. Backtest the quant + ML layers on price data only, then validate the sentiment value-add in paper trading.
+**Phase 3**: inject a real `NewsDataProvider` instance. See the `news-data-provider` skill for the client implementation, rate-limit strategy, and caching.
+
+```python
+# Phase 1 (stub)
+enricher = FinBERTEnricher(news_provider=None)
+
+# Phase 3 (real)
+from src.data.news_data import NewsDataProvider
+import os
+news = NewsDataProvider(
+    alpha_vantage_key=os.environ.get("ALPHA_VANTAGE_API_KEY"),
+    finnhub_key=os.environ.get("FINNHUB_API_KEY"),
+)
+enricher = FinBERTEnricher(news_provider=news)
+```
 
 ## Step 4: Caching Strategy
 
